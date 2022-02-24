@@ -11,3 +11,7 @@ Encoding: UTF-8
 
 RnwWeave: Sweave
 LaTeX: pdfLaTeX
+
+PythonType: system
+PythonVersion: 3.10.2
+PythonPath: C:/Users/Krenn.S/AppData/Local/Programs/Python/Python310/python.exe
