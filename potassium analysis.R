@@ -84,7 +84,7 @@ ace_values <- read_excel('data/ACE_new.xlsx') %>%
 
 patients_pot <- clinical_data %>% 
   select(pat_id = 'Pat ID', 
-         gender, 
+         sex = gender, 
          age, 
          date_first_symptoms = `Date first symptoms`,
          date_first_test = `Date first test`,
@@ -251,7 +251,7 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
          days_since_pot_supp = as.numeric(date_measurement - latest_pot_supp_date),
          pot_change = potassium - latest_pot) %>% 
   ungroup %>% 
-  replace_na(replace=list(days_since_arb = 0,
+  tidyr::replace_na(replace=list(days_since_arb = 0,
              days_since_acei = 0,
              days_since_mra = 0,
              days_since_loop_diuretic = 0,
@@ -279,14 +279,17 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
   filter(days_since_hospital %in% 0:20)%>% 
   relocate(any_of(c("pat_id", "date_days","never_icu","in_icu","date_icu_asdate","date_icu_discharge_asdate","date_hospital_discharge_asdate","date_death_asdate","num_date_death","date_death","end_of_icu","pat_id", "days_since_hospital", "seven_days_since_hospital","days_since_ald", "days_since_pot", "latest_pot_date", "latest_pot", "ald", "latest_ald", "latest_ald_date" )), .after=potassium) %>% 
   add_labels(never_icu, labels=c("No ICU"=1, "ICU"=0))
+
+potassium_df$ald[potassium_df$ald==10] <- 20
+potassium_df$latest_ald[potassium_df$latest_ald==10] <- 20
   
-potaldvars <- c("pat_id","PRA-S","in_icu","never_icu","pot_change","potassium","latest_ald","latest_pot","days_since_ald","days_since_pot","gender","age","days_since_hospital", "pot_supp", "days_since_arb", "days_since_acei","days_since_mra", "days_since_loop_diuretic", "days_since_thiazid", "days_since_pot_flush", "days_since_pot_supp", "latest_arb", "latest_acei", "latest_mra", "latest_loop_diuretic", "latest_thiazid", "latest_pot_flush", "latest_pot_supp")
+potaldvars <- c("pat_id","in_icu","never_icu","pot_change","potassium","latest_ald","latest_pot","days_since_ald","days_since_pot","sex","age","days_since_hospital", "pot_supp", "days_since_arb", "days_since_acei","days_since_mra", "days_since_loop_diuretic", "days_since_thiazid", "days_since_pot_flush", "days_since_pot_supp", "latest_arb", "latest_acei", "latest_mra", "latest_loop_diuretic", "latest_thiazid", "latest_pot_flush", "latest_pot_supp")
 
 
 
 names(potassium_df)
 
-## vars "pat_id","potassium","latest_ald","latest_pot","latest_ald_date","latest_pot_date","gender","age","days_since_hospital"
+## vars "pat_id","potassium","latest_ald","latest_pot","latest_ald_date","latest_pot_date","sex","age","days_since_hospital"
 
 ## meds "insulin","beta-blocker","alpha-blocker","calcium channel blocker","alpha-2-agonist","kalzium antagonist",
 ##      "potassium channel opener","alpha1-adrenoceptor-antagonist" "arb","acei"m"loop diuretic","thiazid diuretic","carbonic anhydrase inhibitor"
@@ -301,7 +304,7 @@ potald <- potassium_df %>%
   select(all_of(potaldvars)) %>% 
   drop_na() %>% 
   mutate(ID = as.numeric(factor(pat_id)))
-#potald$latest_ald[potald$latest_ald == 10] = 5
+potald$latest_ald[potald$latest_ald == 10] = 20
 
 hist(log(potald$latest_ald))
 qqnorm(log(potald$latest_ald))
@@ -377,10 +380,10 @@ plot_grid(agehist, ageqq, labels = "AUTO")
 
 
 patient_sex <- potald %>% group_by(pat_id) %>% filter(row_number()==1) %>% ungroup() %>%  ggplot()+
-  geom_bar(aes(x=gender))+
+  geom_bar(aes(x=sex))+
   labs(title="Patients")
 complete_observation_sex <- potald %>%ggplot()+
-  geom_bar(aes(x=gender))+
+  geom_bar(aes(x=sex))+
   labs(title="Observations")
 plot_grid(patient_sex, complete_observation_sex, labels = "AUTO")
 
@@ -422,7 +425,7 @@ IDA = data.frame(IDA)
 logIDA = data.frame(lapply(IDA, log2))
 logIDA2 = data.frame(lapply(logIDA, log2))
 dev.off()
-pdf(file="log and nonlog.pdf")
+pdf(file="output/log and nonlog.pdf")
 for (x in c(1:length(colnames(IDA)))){
   if (all(IDA[,x] %in% c(0,1))){
     print(ggplot(data=data.frame(IDA), aes(x = IDA[,x])) +
@@ -454,9 +457,15 @@ dev.off()
 
 #### Table One ####
 
-t1df <- potassium_df %>% group_by(pat_id) %>% mutate(Mean_Potassium = mean(potassium,na.rm=TRUE), Mean_Aldosterone = mean(ald,na.rm=TRUE))%>% filter(row_number()==1) %>% ungroup %>%  
-  transmute(Age = age, Sex = factor(gender, levels=c("f","m"), labels=c("Female","Male")), BMI = bmi, Diabetes= factor(diabetes, levels=c("yes","no"), labels=c("Yes","No")),
-            Hypertension = factor(hypertension, levels=c("yes","no"), labels=c("Yes","No")),COPD = factor(copd, levels=c("yes","no"), labels=c("Yes","No")), pat_id, never_icu = factor(never_icu, levels=c(0, 1), labels=c("ICU", "No ICU")), Potassium, Aldosterone) 
+t1df <- potassium_df %>% group_by(pat_id) %>% mutate(Mean_Potassium = median(potassium,na.rm=TRUE), Mean_Aldosterone = median(ald,na.rm=TRUE))%>% 
+  filter(row_number()==1) %>% 
+  ungroup %>%  
+  mutate(Age = age, Sex = factor(sex, levels=c("f","m"), labels=c("Female","Male")), BMI = bmi, 
+            Diabetes= factor(diabetes, levels=c("yes","no"), labels=c("Yes","No")),
+            Hypertension = factor(hypertension, levels=c("yes","no"), labels=c("Yes","No")),
+            COPD = factor(copd, levels=c("yes","no"),labels=c("Yes","No")), 
+            pat_id, ICU = factor(never_icu, levels=c(0, 1), labels=c("ICU", "No ICU")), Potassium = potassium, Aldosterone = ald) %>% 
+  var_labels(Age = "Age (years)",BMI = "BMI (kg/m²)", Mean_Potassium ="Serum Potassium (mmol/L)", Mean_Aldosterone= "Serum Aldosterone (pmol/L)", ICU = "ICU stay")
 
 
 my_plots <- lapply(names(t1df), function(var_x){
@@ -473,102 +482,83 @@ my_plots <- lapply(names(t1df), function(var_x){
 
 plot_grid(my_plots)
 
-t1 <- table1(~ Sex + Age + BMI + Diabetes + Hypertension + COPD + Aldosterone + Potassium| never_icu, data=t1df, render.continuous="Median [Min, Max]")
+(t1 <- table1(~ Age + BMI + Diabetes + Hypertension + COPD + ICU + Mean_Potassium + Mean_Aldosterone  | Sex, data=t1df, render.continuous="Median [Q1,Q3]"))
 
-write.table(t1,file="tables/T1.docx")
+write.table(t1,file="output/T1.png")
+
 
 #### Smooth Plots ####
+
+potassium_df <- potassium_df %>% mutate(never_icu = factor(never_icu, levels=c(0, 1), labels=c("ICU", "No ICU"))) %>% var_labels(never_icu, "ICU stay")
 
 
 total_aldplot <- potassium_df %>% 
   ggplot(aes(x=days_since_hospital,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth() +
-  ylab("Aldosterone")+
+  geom_smooth(aes(group=never_icu, linetype =never_icu,),col="grey0", alpha = 0.2) +
+  ylab("Aldosterone (pmol/L)")+
   xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(-100,250,by=50), limits=c(-50,100))
+  theme(legend.title = element_blank())+
+  scale_y_log10(limits=c(9,400), n.breaks=10)
 
 total_potplot <- potassium_df%>% 
   ggplot(aes(x=days_since_hospital,y=potassium)) +  
-  geom_smooth(color="red")+
+  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
   theme_cowplot(12) +
   ylab("Potassium (mmol/L)")+
   xlab("Days since hospitalization")+
+  theme(legend.title = element_blank())+
   scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
 
 test_total_aldplot <- potassium_df %>% 
   ggplot(aes(x=days_since_test,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth() +
-  ylab("Aldosterone")+
+  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2) +
+  ylab("Aldosterone (pmol/L)")+
   xlab("Days since test")+
-  scale_y_continuous(breaks=seq(-100,250,by=50), limits=c(-50,100))
+  theme(legend.title = element_blank())+
+  scale_y_log10(limits=c(9,400), n.breaks=10)
 
 test_total_potplot <- potassium_df%>% 
   ggplot(aes(x=days_since_test,y=potassium)) +  
-  geom_smooth(color="red")+
+  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
   theme_cowplot(12) +
   ylab("Potassium (mmol/L)")+
-  xlab("Days since test")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-aldplot <- potassium_df[potassium_df$never_icu==1,] %>% 
-  ggplot(aes(x=days_since_hospital,y=ald)) +
-  theme_cowplot(12)+
-  geom_smooth() +
-  ylab("Aldosterone")+
-  xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(-100,250,by=50), limits=c(-50,100))
-
-potplot <- potassium_df[potassium_df$never_icu==1,] %>% 
-  ggplot(aes(x=days_since_hospital,y=potassium)) +  
-  geom_smooth(color="red")+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+  xlab("Days since test")+  
+  theme(legend.title = element_blank())+
+  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2), alpha = 0.2)
 
 aldICUplot <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth() +
-  ylab("Aldosterone")+
+  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2) +
+  ylab("Aldosterone (pmol/L)")+
   xlab("Days from ICU admission")+
-  scale_y_continuous(breaks=seq(-100,250,by=50), limits=c(-50,100))
+  theme(legend.title = element_blank())+
+  scale_y_log10(limits=c(9,400), n.breaks=10)
 
 potICUplot <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
-  geom_smooth(color="red")+
+  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
   theme_cowplot(12) +
   ylab("Potassium (mmol/L)")+
   xlab("Days from ICU admission")+
+  theme(legend.title = element_blank())+
   scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
 
 
-ald_everICU_plot <- potassium_df[potassium_df$never_icu==0,] %>% 
-  ggplot(aes(x=days_since_hospital,y=ald)) +
-  theme_cowplot(12)+
-  geom_smooth() +
-  ylab("Aldosterone")+
-  xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(-100,250,by=50), limits=c(-50,100))
+smoothplots <- plot_grid(total_potplot,test_total_potplot,potICUplot,total_aldplot,test_total_aldplot,aldICUplot, labes= c("A","B"), label_size = 12, ncol=3, nrow=2)
 
-pot_everICU_plot <- potassium_df[potassium_df$never_icu==0,] %>% 
-  ggplot(aes(x=days_since_hospital,y=potassium)) +  
-  geom_smooth(color="red")+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+save_plot('output/Concordant Trend of Ald and Pot.png', smoothplots, ncol=3, nrow=2)
 
-plot_grid(total_potplot,total_aldplot,test_total_potplot,test_total_aldplot,potplot,aldplot,pot_everICU_plot,ald_everICU_plot,potICUplot,aldICUplot, labes= c("A","B"), label_size = 12, ncol=2)
 
 
 #### Potassium by Aldosterone per 5 day Interval ####
 
-scx = scale_x_log10(limits=c(9,400), n.breaks=10)
+scx = scale_x_log10(limits=c(19,400), n.breaks=10)
 scy = scale_y_continuous(breaks=seq(2.5,5.6,by=0.5), limits=c(2.5,5.6))
 theme = theme_cowplot(12)
+
 
 fullscatter <-potassium_df %>% 
   ggplot(aes(y=potassium, x=ald))+
@@ -577,7 +567,7 @@ fullscatter <-potassium_df %>%
   xlab("Same Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
+  theme + geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 fullscatter_latest <- potassium_df%>% 
   filter(days_since_ald <2) %>% 
@@ -587,7 +577,7 @@ fullscatter_latest <- potassium_df%>%
   xlab("Previous Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
+  theme + geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 scatter1 <-potassium_df %>% 
   filter(seven_days_since_hospital == 1) %>% 
@@ -597,7 +587,7 @@ scatter1 <-potassium_df %>%
   xlab("Same Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
+  theme + geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 scatter_latest1 <- potassium_df %>% 
   filter(days_since_ald <2,
@@ -608,7 +598,7 @@ scatter_latest1 <- potassium_df %>%
   xlab("Previous Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx + 
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
+  theme + geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 scatter2 <-potassium_df %>% 
   filter(seven_days_since_hospital == 2)%>% 
@@ -618,7 +608,7 @@ scatter2 <-potassium_df %>%
   xlab("Same Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx + 
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
+  theme + geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 scatter_latest2 <- potassium_df %>% 
   filter(days_since_ald <2,
@@ -629,7 +619,7 @@ scatter_latest2 <- potassium_df %>%
   xlab("Previous Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx + 
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
+  theme + geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 scatter3 <-potassium_df %>% 
   filter(seven_days_since_hospital == 3) %>% 
@@ -639,7 +629,7 @@ scatter3 <-potassium_df %>%
   xlab("Same Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx +
-  theme +geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
+  theme +geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 scatter_latest3 <- potassium_df %>% 
   filter(days_since_ald <2,
@@ -650,54 +640,11 @@ scatter_latest3 <- potassium_df %>%
   xlab("Previous Day Aldosterone (pg/mL, Logarithmic Scale)")+
   scy +
   scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
-
-scatterICU <-potassium_df %>% 
-  filter(in_icu == 1) %>% 
-  ggplot(aes(y=potassium, x=ald))+
-  geom_point()+
-  ylab("Potassium (mmol/L)")+
-  xlab("Same Day Aldosterone (pg/mL, Logarithmic Scale)")+
-  scy +
-  scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
-
-scatter_latestICU <- potassium_df %>% 
-  filter(days_since_ald <2,
-         in_icu == 1)%>% 
-  ggplot(aes(y=potassium, x=latest_ald))+
-  geom_point()+
-  ylab("Potassium (mmol/L)")+
-  xlab("Previous Day Aldosterone (pg/mL, Logarithmic Scale)")+
-  scy +
-  scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
-
-scatterICU <-potassium_df %>% 
-  filter(in_icu == 0) %>% 
-  ggplot(aes(y=potassium, x=ald))+
-  geom_point()+
-  ylab("Potassium (mmol/L)")+
-  xlab("Same Day Aldosterone (pg/mL, Logarithmic Scale)")+
-  scy +
-  scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
-
-scatter_latestnoICU <- potassium_df %>% 
-  filter(days_since_ald <2,
-         in_icu == 0)%>% 
-  ggplot(aes(y=potassium, x=latest_ald))+
-  geom_point()+
-  ylab("Potassium (mmol/L)")+
-  xlab("Previous Day Aldosterone (pg/mL, Logarithmic Scale)")+
-  scy +
-  scx +
-  theme + geom_vline(aes(xintercept=10),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
-
+  theme + geom_vline(aes(xintercept=20),color="red", linetype = "dashed") + annotation_logticks(sides="b") 
 
 (aldpotscat <- plot_grid(fullscatter,fullscatter_latest,scatter1,scatter_latest1,scatter2,scatter_latest2,scatter3,scatter_latest3, label_size = 12, ncol=2, labels = "AUTO"))
 
-save_plot('figures/aldpotscat.png', aldpotscat, ncol=2, nrow=4)
+save_plot('output/Lack of Correlation Ald and Pot.png', aldpotscat, ncol=2, nrow=4)
 
 
 
@@ -705,7 +652,7 @@ save_plot('figures/aldpotscat.png', aldpotscat, ncol=2, nrow=4)
 
 
 formule1 <- potassium ~ 
-  age + gender + in_icu + days_since_hospital+
+  age + sex + in_icu + days_since_hospital+
   latest_ald + latest_ald:days_since_ald +
   latest_pot + latest_pot:days_since_pot+ 
   latest_arb+latest_arb:days_since_arb+
@@ -741,7 +688,7 @@ x=1
 predictors <- attr(terms(fit_potald),"term.labels") %>% str_replace_all(":","*")
 
 dev.off()
-pdf(file="potald_residuals_without_splines.pdf")
+pdf(file="output/potald_residuals_without_splines.pdf")
 for (x in 1:length(predictors)){
   xa = predictors[x]
   print(
@@ -757,7 +704,8 @@ dev.off()
 
 potald_min1 <- potald %>% 
   mutate_at(c("days_since_ald", "days_since_pot", "days_since_arb", "days_since_acei",
-              "days_since_mra","days_since_loop_diuretic","days_since_thiazid","days_since_pot_flush","days_since_pot_supp"),~.-1)
+              "days_since_mra","days_since_loop_diuretic","days_since_thiazid",
+              "days_since_pot_flush","days_since_pot_supp"),~.-1)
 
 summary(potald_min1)
 
@@ -765,14 +713,14 @@ fit_potald_min1 <-  geeglm(formula= formule1,
                       data=potald_min1, family="gaussian", id=ID, corstr="ar1", waves=days_since_hospital)
 summary(fit_potald_min1)
 
-potald_min1$residuals_pot <-fit_potald_min1$residuals
+potald_min1$residuals_potmin1 <-fit_potald_min1$residuals
 
 x=1
 
 predictors <- attr(terms(fit_potald),"term.labels") %>% str_replace_all(":","*")
 
 dev.off()
-pdf(file="potald_min1_residuals_without_splines.pdf")
+pdf(file="output/potald_min1_residuals_without_splines.pdf")
 for (x in 1:length(predictors)){
   xa = predictors[x]
   print(
@@ -788,24 +736,26 @@ dev.off()
 
 potald_1div <- potald %>% 
   mutate_at(c("days_since_ald", "days_since_pot", "days_since_arb", "days_since_acei",
-              "days_since_mra","days_since_loop_diuretic","days_since_thiazid","days_since_pot_flush","days_since_pot_supp"),~1/.)
+              "days_since_mra","days_since_loop_diuretic","days_since_thiazid",
+              "days_since_pot_flush","days_since_pot_supp"),~1-(1/.))
 summary(potald_1div)
 
-potald_1div[potald_1div == Inf] <- 1
+potald_1div[potald_1div == -Inf] <- 1
+
 summary(potald_1div)
 
 fit_potald_1div<-  geeglm(formula= formule1, 
                       data=potald_1div, family="gaussian", id=ID, corstr="ar1", waves=days_since_hospital)
 summary(fit_potald_1div)
 
-potald_1div$residuals_pot <-fit_potald_1div$residuals
+potald_1div$residuals_pot1div <-fit_potald_1div$residuals
 
 x=1
 
 predictors <- attr(terms(fit_potald),"term.labels") %>% str_replace_all(":","*")
 
 dev.off()
-pdf(file="potald_1div_residuals_without_splines.pdf")
+pdf(file="output/potald_1div_residuals_without_splines.pdf")
 for (x in 1:length(predictors)){
   xa = predictors[x]
   print(
@@ -819,24 +769,148 @@ for (x in 1:length(predictors)){
 dev.off()
 
 
+
+#### GEE without spline & log predictors ####
+
+
+
+potald <- potald %>% 
+  mutate(latest_ald_log = log(latest_ald))
+
+
+formule2 <- potassium ~ 
+  age + sex + in_icu + days_since_hospital+
+  latest_ald_log + latest_ald_log:days_since_ald +
+  latest_pot + latest_pot:days_since_pot+ 
+  latest_arb+latest_arb:days_since_arb+
+  latest_acei+latest_acei:days_since_acei+
+  latest_mra+latest_mra:days_since_mra+
+  latest_loop_diuretic+latest_loop_diuretic:days_since_loop_diuretic+
+  latest_thiazid+latest_thiazid:days_since_thiazid+
+  latest_pot_flush+latest_pot_flush:days_since_pot_flush+
+  latest_pot_supp+latest_pot_supp:days_since_pot_supp
+
+
+geelm.control(std.err ="san.se")
+fit_potald_log <-  geeglm(formula= formule2, 
+                      data=potald, family="gaussian", id=ID, corstr="ar1", waves=days_since_hospital)
+
+summary(fit_potald_log)
+
+
+potald$residuals_pot <-fit_potald_log$residuals
+
+x=1
+
+predictors <- attr(terms(fit_potald_log),"term.labels") %>% str_replace_all(":","*")
+
+dev.off()
+pdf(file="output/potald_log_residuals_without_splines.pdf")
+for (x in 1:length(predictors)){
+  xa = predictors[x]
+  print(
+    ggplot(data=potald, aes_string(x=xa,y="residuals_pot")) +
+      geom_point(colour="black", fill="white") +
+      geom_smooth() +
+      labs(y="Residuals Potassium",
+           x=predictors[x])
+  )
+}
+dev.off()
+
+
+potald_min1_log <- potald %>% 
+  mutate_at(c("days_since_ald", "days_since_pot", "days_since_arb", "days_since_acei",
+              "days_since_mra","days_since_loop_diuretic","days_since_thiazid",
+              "days_since_pot_flush","days_since_pot_supp"),~.-1)
+
+summary(potald_min1_log)
+
+fit_potald_min1_log <-  geeglm(formula= formule2, 
+                           data=potald_min1_log, family="gaussian", id=ID, corstr="ar1", waves=days_since_hospital)
+summary(fit_potald_min1_log)
+
+potald_min1_log$residuals_potmin1 <-fit_potald_min1_log$residuals
+
+x=1
+
+predictors <- attr(terms(fit_potald_min1_log),"term.labels") %>% str_replace_all(":","*")
+
+dev.off()
+pdf(file="output/potald_min1_log_residuals_without_splines.pdf")
+for (x in 1:length(predictors)){
+  xa = predictors[x]
+  print(
+    ggplot(data=potald_min1_log, aes_string(x=xa,y="residuals_pot")) +
+      geom_point(colour="black", fill="white") +
+      geom_smooth() +
+      labs(y="Residuals Potassium",
+           x=predictors[x])
+  )
+}
+dev.off()
+
+
+potald_1div_log <- potald %>% 
+  mutate_at(c("days_since_ald", "days_since_pot", "days_since_arb", "days_since_acei",
+              "days_since_mra","days_since_loop_diuretic","days_since_thiazid",
+              "days_since_pot_flush","days_since_pot_supp"),~1-(1/.))
+summary(potald_1div_log)
+
+potald_1div_log[potald_1div_log == -Inf] <- 1
+
+summary(potald_1div_log)
+
+fit_potald_1div_log<-  geeglm(formula= formule2, 
+                          data=potald_1div_log, family="gaussian", id=ID, corstr="ar1", waves=days_since_hospital)
+summary(fit_potald_1div_log)
+
+potald_1div_log$residuals_pot1div <-fit_potald_1div_log$residuals
+
+x=1
+
+predictors <- attr(terms(fit_potald_1div_log),"term.labels") %>% str_replace_all(":","*")
+
+dev.off()
+pdf(file="output/potald_1div_log_residuals_without_splines.pdf")
+for (x in 1:length(predictors)){
+  xa = predictors[x]
+  print(
+    ggplot(data=potald_1div_log, aes_string(x=xa,y="residuals_pot")) +
+      geom_point(colour="black", fill="white") +
+      geom_smooth() +
+      labs(y="Residuals Potassium",
+           x=predictors[x])
+  )
+}
+dev.off()
+
+
 library(sjPlot)
 library(sjmisc)
 library(sjlabelled)
 
+
 QIC(fit_potald_min1)
+QIC(fit_potald_min1_log)
 QIC(fit_potald_1div)
+QIC(fit_potald_1div_log)
 QIC(fit_potald)
+QIC(fit_potald_log)
 
-tab_model(fit_potald_min1,fit_potald_1div,fit_potald,
-          dv.labels = c("Elapsed Days Minus One", "One Over Elapsed Days", "Regular Elapsed Days"), digits = 5,
-          file = "Elapsed Time Transformation GEE Results.html")
+tab_model(fit_potald_min1,fit_potald_min1_log,fit_potald_1div,fit_potald_1div_log,fit_potald,fit_potald_log,
+          dv.labels = c("Elapsed Days Minus One", "Elapsed Days Minus One and Log of Aldosterone", 
+                        "One Over Elapsed Days", "One Over Elapsed Days and Log of Aldosterone", "Regular Elapsed Days",
+                        "Regular Elapsed Days and Log of Alsdosterone"), digits = 5,
+          file = "output/Elapsed Time Transformation and Log of Aldosterone GEE Results.html", linebreak = TRUE)
 
 
-predictors <- attr(terms(fit_potald),"term.labels") %>% str_replace_all(":","*")
+#### log and nonlog predictor distributions ####
 
 
 IDA = potald %>% mutate(pot_int = latest_pot*days_since_pot,
                         ald_int = latest_ald*days_since_ald,
+                        ald_int_log = latest_ald_log*days_since_ald,
                         arb_int = latest_arb*days_since_arb,
                         acei_int = latest_acei*days_since_acei,
                         mra_int = latest_mra*days_since_mra,
@@ -844,35 +918,37 @@ IDA = potald %>% mutate(pot_int = latest_pot*days_since_pot,
                         thiazid_int = latest_thiazid*days_since_thiazid,
                         pot_flush_int = latest_pot_flush*days_since_pot_flush,
                         pot_supp_int = latest_pot_supp*days_since_pot_supp) %>% 
-  select(potassium,latest_pot,latest_ald,age,days_since_hospital,pot_int,ald_int,arb_int,
+  select(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
          acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int)
 
 
-logIDA = IDA %>% mutate_at(vars(potassium,latest_pot,latest_ald,age,days_since_hospital,pot_int,ald_int,arb_int,
-                                     acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log2)
-logIDA2 = logIDA %>% mutate_at(vars(potassium,latest_pot,latest_ald,age,days_since_hospital,pot_int,ald_int,arb_int,
-                                 acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log2)
-pdf(file="log and nonlog.pdf")
+logIDA = IDA %>% mutate_at(vars(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+                                acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log2)
+logIDA2 = logIDA %>% mutate_at(vars(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+                                    acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log2)
+dev.off()
+
+pdf(file="output/log and nonlog.pdf")
 for (x in c(1:length(colnames(IDA)))){
   xa = colnames(IDA)[x]
   try(print(ggplot(data=data.frame(IDA), aes_string(x = xa)) +
-          geom_histogram(data=data.frame(IDA)[x], aes(y=..density..), colour="black", fill="white")+
-          geom_density(data=data.frame(IDA)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
-          labs(title=colnames(IDA)[x],x=colnames(IDA)[x], y = "Density")))
+              geom_histogram(data=data.frame(IDA)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(IDA)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=colnames(IDA)[x],x=colnames(IDA)[x], y = "Density")))
   try(print(ggplot(data=data.frame(IDA), aes_string(sample = xa)) +
               geom_qq()+ geom_qq_line()+
-        labs(title=colnames(IDA)[x],x="Theoretical", y = "Sample")))
+              labs(title=colnames(IDA)[x],x="Theoretical", y = "Sample")))
   try(print(ggplot(data=data.frame(logIDA), aes_string(x = xa)) +
-          geom_histogram(data=data.frame(logIDA)[x], aes(y=..density..), colour="black", fill="white")+
-          geom_density(data=data.frame(logIDA)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
-          labs(title=paste0("Log of ",colnames(IDA)[x]),x=paste0("Log of ",colnames(IDA)[x]), y = "Density")))
+              geom_histogram(data=data.frame(logIDA)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(logIDA)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=paste0("Log of ",colnames(IDA)[x]),x=paste0("Log of ",colnames(IDA)[x]), y = "Density")))
   try(print(ggplot(data=data.frame(logIDA), aes_string(sample = xa)) +
               geom_qq()+ geom_qq_line()+
-            labs(title=paste0("Log of ",colnames(IDA)[x]),x="Theoretical", y = "Sample")))
+              labs(title=paste0("Log of ",colnames(IDA)[x]),x="Theoretical", y = "Sample")))
   try(print(ggplot(data=data.frame(logIDA2), aes_string(x = xa)) +
-          geom_histogram(data=data.frame(logIDA2)[x], aes(y=..density..), colour="black", fill="white")+
-          geom_density(data=data.frame(logIDA2)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
-          labs(title=paste0("Double Log of ",colnames(IDA)[x]),x=paste0("Double Log of ",colnames(IDA)[x]), y = "Density")))
+              geom_histogram(data=data.frame(logIDA2)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(logIDA2)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=paste0("Double Log of ",colnames(IDA)[x]),x=paste0("Double Log of ",colnames(IDA)[x]), y = "Density")))
   try(print(ggplot(data=data.frame(logIDA2), aes_string(sample = xa)) +
               geom_qq()+ geom_qq_line()+
               labs(title=paste0("Double Log of ",colnames(IDA)[x]),x="Theoretical", y = "Sample")))
@@ -880,8 +956,98 @@ for (x in c(1:length(colnames(IDA)))){
 dev.off()
 
 
+IDA_1div = potald_1div %>% mutate(pot_int = latest_pot*days_since_pot,
+                                  ald_int = latest_ald*days_since_ald,
+                                  arb_int = latest_arb*days_since_arb,
+                                  acei_int = latest_acei*days_since_acei,
+                                  mra_int = latest_mra*days_since_mra,
+                                  loop_diuretic_int = latest_loop_diuretic*days_since_loop_diuretic,
+                                  thiazid_int = latest_thiazid*days_since_thiazid,
+                                  pot_flush_int = latest_pot_flush*days_since_pot_flush,
+                                  pot_supp_int = latest_pot_supp*days_since_pot_supp) %>% 
+  select(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+         acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int)
 
 
+logIDA_1div = IDA_1div %>% mutate_at(vars(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+                                          acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log10)
+logIDA2_1div = logIDA_1div %>% mutate_at(vars(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+                                              acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log10)
+dev.off()
+
+pdf(file="output/log and nonlog 1div.pdf")
+for (x in c(1:length(colnames(IDA_1div)))){
+  xa = colnames(IDA_1div)[x]
+  try(print(ggplot(data=data.frame(IDA_1div), aes_string(x = xa)) +
+              geom_histogram(data=data.frame(IDA_1div)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(IDA_1div)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=colnames(IDA_1div)[x],x=colnames(IDA_1div)[x], y = "Density")))
+  try(print(ggplot(data=data.frame(IDA_1div), aes_string(sample = xa)) +
+              geom_qq()+ geom_qq_line()+
+              labs(title=colnames(IDA_1div)[x],x="Theoretical", y = "Sample")))
+  try(print(ggplot(data=data.frame(logIDA_1div), aes_string(x = xa)) +
+              geom_histogram(data=data.frame(logIDA_1div)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(logIDA_1div)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=paste0("Log of ",colnames(IDA_1div)[x]),x=paste0("Log of ",colnames(IDA_1div)[x]), y = "Density")))
+  try(print(ggplot(data=data.frame(logIDA_1div), aes_string(sample = xa)) +
+              geom_qq()+ geom_qq_line()+
+              labs(title=paste0("Log of ",colnames(IDA)[x]),x="Theoretical", y = "Sample")))
+  try(print(ggplot(data=data.frame(logIDA2_1div), aes_string(x = xa)) +
+              geom_histogram(data=data.frame(logIDA2_1div)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(logIDA2_1div)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=paste0("Double Log of ",colnames(IDA_1div)[x]),x=paste0("Double Log of ",colnames(IDA_1div)[x]), y = "Density")))
+  try(print(ggplot(data=data.frame(logIDA_1div2), aes_string(sample = xa)) +
+              geom_qq()+ geom_qq_line()+
+              labs(title=paste0("Double Log of ",colnames(IDA_1div)[x]),x="Theoretical", y = "Sample")))
+}
+dev.off()
+
+
+IDA_min1 = potald_min1 %>% mutate(pot_int = latest_pot*days_since_pot,
+                                  ald_int = latest_ald*days_since_ald,
+                                  arb_int = latest_arb*days_since_arb,
+                                  acei_int = latest_acei*days_since_acei,
+                                  mra_int = latest_mra*days_since_mra,
+                                  loop_diuretic_int = latest_loop_diuretic*days_since_loop_diuretic,
+                                  thiazid_int = latest_thiazid*days_since_thiazid,
+                                  pot_flush_int = latest_pot_flush*days_since_pot_flush,
+                                  pot_supp_int = latest_pot_supp*days_since_pot_supp) %>% 
+  select(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+         acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int)
+
+
+logIDA_min1 = IDA_min1 %>% mutate_at(vars(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+                                          acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log10)
+logIDA2_min1 = logIDA_min1 %>% mutate_at(vars(age,days_since_hospital,potassium,latest_pot,pot_int,latest_ald,ald_int,arb_int,
+                                              acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log10)
+dev.off()
+
+pdf(file="output/log and nonlog min1.pdf")
+for (x in c(1:length(colnames(IDA_min1)))){
+  xa = colnames(IDA_min1)[x]
+  try(print(ggplot(data=data.frame(IDA_min1), aes_string(x = xa)) +
+              geom_histogram(data=data.frame(IDA_min1)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(IDA_min1)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=colnames(IDA_min1)[x],x=colnames(IDA_min1)[x], y = "Density")))
+  try(print(ggplot(data=data.frame(IDA_min1), aes_string(sample = xa)) +
+              geom_qq()+ geom_qq_line()+
+              labs(title=colnames(IDA_min1)[x],x="Theoretical", y = "Sample")))
+  try(print(ggplot(data=data.frame(logIDA_min1), aes_string(x = xa)) +
+              geom_histogram(data=data.frame(logIDA_min1)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(logIDA_min1)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=paste0("Log of ",colnames(IDA_min1)[x]),x=paste0("Log of ",colnames(IDA_min1)[x]), y = "Density")))
+  try(print(ggplot(data=data.frame(logIDA_min1), aes_string(sample = xa)) +
+              geom_qq()+ geom_qq_line()+
+              labs(title=paste0("Log of ",colnames(IDA)[x]),x="Theoretical", y = "Sample")))
+  try(print(ggplot(data=data.frame(logIDA2_min1), aes_string(x = xa)) +
+              geom_histogram(data=data.frame(logIDA2_min1)[x], aes(y=..density..), colour="black", fill="white")+
+              geom_density(data=data.frame(logIDA2_min1)[x], aes(y=..density..), alpha=.2, fill="#FF6666")+
+              labs(title=paste0("Double Log of ",colnames(IDA_min1)[x]),x=paste0("Double Log of ",colnames(IDA_min1)[x]), y = "Density")))
+  try(print(ggplot(data=data.frame(logIDA2_min1), aes_string(sample = xa)) +
+              geom_qq()+ geom_qq_line()+
+              labs(title=paste0("Double Log of ",colnames(IDA_min1)[x]),x="Theoretical", y = "Sample")))
+}
+dev.off()
 
 geelm.control(std.err ="san.se")
 fit_potald <-  geeglm(formula= formule1, 
@@ -910,7 +1076,8 @@ QIC(ar1_fit_potald)
 QIC(ind_fit_potald)
 QIC(exc_fit_potald)
 
-## Outlier Removal
+
+#### Outlier Removal ####
 
 outliers20 <- potald[-c(43,315,423),][-c(1,418),][-c(126,363),][-c(417),][-c(437,196,278),][-c(422,424),][-c(108,43,201),][-c(72,338),][-c(53,92),]
 geelm.control(std.err ="san.se")
@@ -934,7 +1101,7 @@ x=1
 predictors <- attr(terms(fit_potald),"term.labels") %>% str_replace_all(":","*")
 
 dev.off()
-pdf(file="20_outliers removed_pot_residuals_without_splines.pdf")
+pdf(file="output/20_outliers removed_pot_residuals_without_splines.pdf")
 for (x in 1:length(predictors)){
   xa = predictors[x]
   print(
@@ -952,7 +1119,7 @@ dev.off()
 
 
 
-## GEE before ICU without splines
+#### GEE before ICU without splines ####
 
 
 before_ICU <- potald %>%
@@ -985,7 +1152,7 @@ x=1
 predictors <- attr(terms(fit_before_ICU),"term.labels") %>% str_replace_all(":","*")
 
 dev.off()
-pdf(file="pot_residuals_without_splines.pdf")
+pdf(file="output/pot_residuals_without_splines.pdf")
 for (x in 1:length(predictors)){
   xa = predictors[x]
   print(
@@ -1012,7 +1179,7 @@ ggplot(data=fit_before_ICU, aes(x=in_icu, y=pot_supp))+
 #   ns(latest_ald,knots=c(10,50,75), Boundary.knots = c(5,100)):ns(days_since_ald,Boundary.knots= c(1,6), knots=c(3,4)) + 
 #   ns(latest_pot, Boundary.knots = c(3,4.5), knots=c(3.5,4)) +
 #   ns(latest_pot, Boundary.knots = c(3,4.5), knots=c(3.5,4)):ns(days_since_pot, Boundary.knots = c(1,3),knots=2) + 
-#   days_since_hospital + ns(age, Boundary.knots = c(36, 85), knots=c(50,66,78)) + gender + pot_supp + in_icu
+#   days_since_hospital + ns(age, Boundary.knots = c(36, 85), knots=c(50,66,78)) + sex + pot_supp + in_icu
 # 
 # geelm.control(std.err ="san.se")
 # fit_potald_spl <-  geeglm(formula= formule2, 
@@ -1032,7 +1199,7 @@ ggplot(data=fit_before_ICU, aes(x=in_icu, y=pot_supp))+
 # potald$residuals_pot <-fit_potald_spl$residuals
 # 
 # dev.off()
-# pdf(file="pot_residuals_with_splines.pdf")
+# pdf(file="output/pot_residuals_with_splines.pdf")
 # for (x in 1:length(colnames(potald))){
 #   if (!colnames(potald)[x] %in% c("pat_id")){
 #     print(
@@ -1056,7 +1223,7 @@ ggplot(data=fit_before_ICU, aes(x=in_icu, y=pot_supp))+
 # 
 # 
 # 
-# formule3 <- hypoK ~  latest_ald + latest_ald:days_since_ald + latest_pot + latest_pot:days_since_pot + days_since_hospital + age + gender + pot_supp
+# formule3 <- hypoK ~  latest_ald + latest_ald:days_since_ald + latest_pot + latest_pot:days_since_pot + days_since_hospital + age + sex + pot_supp
 # 
 # fit_hypoK <- geeglm(formula= formule3, 
 #                     data=potald, family= binomial(link='logit'), id=ID, corstr="ar1", waves=days_since_hospital)
@@ -1069,7 +1236,7 @@ ggplot(data=fit_before_ICU, aes(x=in_icu, y=pot_supp))+
 # potald$residuals_hypoK <-fit_hypoK$residuals
 # 
 # dev.off()
-# pdf(file="hypoK_residuals.pdf")
+# pdf(file="output/hypoK_residuals.pdf")
 # for (x in 1:length(colnames(potald))){
 #   if (!colnames(potald)[x] %in% c("pat_id")){
 #     print(
@@ -1094,7 +1261,7 @@ ggplot(data=fit_before_ICU, aes(x=in_icu, y=pot_supp))+
 # 
 # 
 # formule4 <- hypoK ~  ns(latest_ald,knots=c(10,50,75), Boundary.knots = c(5,100)) + ns(latest_ald,knots=c(10,50,75), Boundary.knots = c(5,100)):ns(days_since_ald,Boundary.knots= c(1,6), knots=c(3,4)) + ns(latest_pot, Boundary.knots = c(3,4.5), knots=c(3.5,4)) +
-#   ns(latest_pot, Boundary.knots = c(3,4.5), knots=c(3.5,4)):ns(days_since_pot, Boundary.knots = c(1,3),knots=2) + days_since_hospital + ns(age, Boundary.knots = c(36, 85), knots=c(50,66,78)) + gender + pot_supp
+#   ns(latest_pot, Boundary.knots = c(3,4.5), knots=c(3.5,4)):ns(days_since_pot, Boundary.knots = c(1,3),knots=2) + days_since_hospital + ns(age, Boundary.knots = c(36, 85), knots=c(50,66,78)) + sex + pot_supp
 # 
 # fit_hypoK_spl <- geeglm(formula= formule4, 
 #                     data=potald, family= binomial(link='logit'), id=ID, corstr="ar1", waves=days_since_hospital)
@@ -1107,7 +1274,7 @@ ggplot(data=fit_before_ICU, aes(x=in_icu, y=pot_supp))+
 # potald$residuals_hypoK <-fit_hypoK_spl$residuals
 # 
 # dev.off()
-# pdf(file="hypoK_residuals_with_splines.pdf")
+# pdf(file="output/hypoK_residuals_with_splines.pdf")
 # for (x in 1:length(colnames(potald))){
 #   if (!colnames(potald)[x] %in% c("pat_id")){
 #     print(
