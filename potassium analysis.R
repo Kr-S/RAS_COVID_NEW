@@ -221,9 +221,10 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
          pras = ifelse(pras < 10 , 10, pras),
          ang2 = ifelse(ang2 < 2 , 2, ang2),
          aa2r = ald/ang2) %>% 
-  mutate_at(vars(latest_pot_date = date_measurement, 
-                 latest_pot = potassium, 
+  mutate_at(vars(latest_pot = potassium, # creating last values
                  latest_ald = ald,
+                 latest_ang2 = ang2,
+                 latest_pras = pras,
                  latest_aa2r= aa2r,
                  latest_arb = arb,
                  latest_acei = acei,
@@ -234,22 +235,22 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
                  latest_pot_supp = pot_supp,
                  latest_cat = catecholamine
                  ), lag) %>%
-  mutate_at(vars(next_ald = ald,
-            next_aa2r = aa2r
+  mutate_at(vars(next_ald = ald,   # creating next values 
+            next_aa2r = aa2r,
+            next_ang2 = ang2,
+            next_pras = pras
             ), lead)%>% 
-  mutate_at(vars(latest_arb,
+  mutate_at(vars(latest_arb, # setting 0 of binary vars to na, so the latest time always only shows time of latest given medication
                  latest_acei,
                  latest_mra,
                  latest_loop_diuretic,
                  latest_thiazid,
                  latest_pot_flush,
                  latest_pot_supp,
-                 next_ald,
-                 latest_aa2r,
-                 latest_cat,
-                 next_aa2r),
+                 latest_cat),
             ~na_if(.,y=0)) %>% 
-  mutate(latest_ald_date = as.Date(ifelse(!is.na(latest_ald),lag(date_measurement),NA), origin = "1970-01-01"),
+  mutate(latest_pot_date = as.Date(ifelse(!is.na(latest_pot),lag(date_measurement),NA), origin = "1970-01-01"), # get the times of latest and next values
+         latest_ald_date = as.Date(ifelse(!is.na(latest_ald),lag(date_measurement),NA), origin = "1970-01-01"),
          latest_arb_date = as.Date(ifelse(!is.na(latest_arb),lag(date_measurement),NA), origin = "1970-01-01"),
          latest_acei_date = as.Date(ifelse(!is.na(latest_acei),lag(date_measurement),NA), origin = "1970-01-01"),
          latest_mra_date = as.Date(ifelse(!is.na(latest_mra),lag(date_measurement),NA), origin = "1970-01-01"),
@@ -260,9 +261,13 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
          latest_cat_date =as.Date(ifelse(!is.na(latest_cat),lag(date_measurement),NA), origin = "1970-01-01"),
          next_ald_date = as.Date(ifelse(!is.na(next_ald),lead(date_measurement),NA), origin = "1970-01-01"),
          latest_aa2r_date = as.Date(ifelse(!is.na(latest_aa2r),lag(date_measurement),NA), origin = "1970-01-01"),
-         next_aa2r_date = as.Date(ifelse(!is.na(next_aa2r),lead(date_measurement),NA), origin = "1970-01-01")
+         next_aa2r_date = as.Date(ifelse(!is.na(next_aa2r),lead(date_measurement),NA), origin = "1970-01-01"),
+         latest_ang2_date = as.Date(ifelse(!is.na(latest_ang2),lag(date_measurement),NA), origin = "1970-01-01"),
+         next_ang2_date = as.Date(ifelse(!is.na(next_ang2),lead(date_measurement),NA), origin = "1970-01-01"),
+         latest_pras_date = as.Date(ifelse(!is.na(latest_pras),lag(date_measurement),NA), origin = "1970-01-01"),
+         next_pras_date = as.Date(ifelse(!is.na(next_pras),lead(date_measurement),NA), origin = "1970-01-01"),
          ) %>% 
-  fill(latest_ald_date, latest_ald,
+  fill(latest_ald_date, latest_ald, # fill backwards empty slots of the latest values and dates
        latest_aa2r_date, latest_aa2r,
        latest_arb,latest_arb_date,
        latest_acei,latest_acei_date,
@@ -272,12 +277,15 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
        latest_pot_flush,latest_pot_flush_date,
        latest_pot_supp,latest_pot_supp_date,
        latest_cat, latest_cat_date,
+       latest_ang2, latest_ang2_date,
+       latest_pras, latest_pras_date,
        .direction = "down") %>% 
-  fill(next_ald, next_ald_date,
+  fill(next_ald, next_ald_date, # fill forward empty slots of next values and dates
        next_aa2r, next_aa2r_date,
+       next_ang2, next_ang2_date,
+       next_pras, next_pras_date,
        .direction = "up") %>% 
-  mutate(days_since_ald = as.numeric(date_measurement - latest_ald_date),
-         days_since_aa2r = as.numeric(date_measurement - latest_aa2r_date),
+  mutate(days_since_ald = as.numeric(date_measurement - latest_ald_date), # calculate differences in days from dates and changes in vars if needed
          days_since_pot = as.numeric(date_measurement - latest_pot_date),
          days_since_arb = as.numeric(date_measurement - latest_arb_date),
          days_since_acei = as.numeric(date_measurement - latest_acei_date),
@@ -288,7 +296,12 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
          days_since_pot_supp = as.numeric(date_measurement - latest_pot_supp_date),
          days_since_cat = as.numeric(date_measurement - latest_cat_date),
          days_to_next_ald = as.numeric(next_ald_date - date_measurement),
+         days_since_aa2r = as.numeric(date_measurement - latest_aa2r_date),
          days_to_next_aa2r = as.numeric(next_aa2r_date - date_measurement),
+         days_since_ang2 = as.numeric(date_measurement - latest_ang2_date),
+         days_to_next_ang2 = as.numeric(next_ang2_date - date_measurement),
+         days_since_pras = as.numeric(date_measurement - latest_pras_date),
+         days_to_next_pras = as.numeric(next_pras_date - date_measurement),
          pot_change = potassium - latest_pot) %>% 
   ungroup %>% 
   tidyr::replace_na(replace=list(days_since_arb = 0,
@@ -1192,14 +1205,16 @@ cowplot::save_plot('output/Lack of Correlation AA2-R and Pot.png', aa2rpotscat, 
 
 scx = scale_x_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,max(potassium_df$aa2r, na.rm=TRUE)+1), n.breaks=12)
 
-scy = scale_y_continuous(breaks=seq(2.5,5.6,by=0.5), limits=c(2.5,5.6))
+min_ang2 <- min(potassium_df$ang2, na.rm=TRUE)-min(potassium_df$ang2, na.rm=TRUE)/100
+max_ang2 <- max(potassium_df$ang2, na.rm=TRUE)+min(potassium_df$ang2, na.rm=TRUE)/100
+scy = scale_y_continuous(breaks=seq(min_ang2,max_ang2,by=0.5), limits=c(min_ang2,max_ang2))
 theme = theme_cowplot(12)
 
 
 aa2r_fullscatter <- potassium_df %>% 
-  ggplot(aes(y=potassium, x=aa2r, color=aa2r_LOQ))+
+  ggplot(aes(y=ang2, x=aa2r, color=aa2r_LOQ))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Same Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
@@ -1208,9 +1223,9 @@ aa2r_fullscatter <- potassium_df %>%
 
 aa2r_fullscatter_latest <- potassium_df%>% 
   filter(days_since_aa2r <2) %>% 
-  ggplot(aes(y=potassium, x=latest_aa2r))+
+  ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Previous Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
@@ -1218,113 +1233,113 @@ aa2r_fullscatter_latest <- potassium_df%>%
 
 aa2r_fullscatter_next <- potassium_df%>% 
   filter(days_to_next_aa2r <2) %>% 
-  ggplot(aes(y=potassium, x=next_aa2r))+
+  ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Next Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx + 
   theme  + annotation_logticks(sides="b") 
 
-aa2r_scatter1 <-potassium_df %>% 
+ang2_aa2r_scatter1 <-potassium_df %>% 
   filter(seven_days_since_hospital == 1) %>% 
-  ggplot(aes(y=potassium, x=aa2r))+
+  ggplot(aes(y=ang2, x=aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Same Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter_latest1 <- potassium_df %>% 
+ang2_aa2r_scatter_latest1 <- potassium_df %>% 
   filter(days_since_aa2r <2,
          seven_days_since_hospital == 1) %>% 
-  ggplot(aes(y=potassium, x=latest_aa2r))+
+  ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Previous Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter_next1 <- potassium_df %>% 
+ang2_aa2r_scatter_next1 <- potassium_df %>% 
   filter(days_to_next_aa2r <2,
          seven_days_since_hospital == 1) %>% 
-  ggplot(aes(y=potassium, x=next_aa2r))+
+  ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Next Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx +
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter2 <-potassium_df %>% 
+ang2_aa2r_scatter2 <-potassium_df %>% 
   filter(seven_days_since_hospital == 2)%>% 
-  ggplot(aes(y=potassium, x=aa2r))+
+  ggplot(aes(y=ang2, x=aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Same Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter_latest2 <- potassium_df %>% 
+ang2_aa2r_scatter_latest2 <- potassium_df %>% 
   filter(days_since_aa2r <2,
          seven_days_since_hospital == 2)%>% 
-  ggplot(aes(y=potassium, x=latest_aa2r))+
+  ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Previous Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter_next2 <- potassium_df %>% 
+ang2_aa2r_scatter_next2 <- potassium_df %>% 
   filter(days_to_next_aa2r <2,
          seven_days_since_hospital == 2)%>% 
-  ggplot(aes(y=potassium, x=next_aa2r))+
+  ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Next Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter3 <-potassium_df %>% 
+ang2_aa2r_scatter3 <-potassium_df %>% 
   filter(seven_days_since_hospital == 3) %>% 
-  ggplot(aes(y=potassium, x=aa2r))+
+  ggplot(aes(y=ang2, x=aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Same Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter_latest3 <- potassium_df %>% 
+ang2_aa2r_scatter_latest3 <- potassium_df %>% 
   filter(days_since_aa2r <2,
          seven_days_since_hospital == 3) %>% 
-  ggplot(aes(y=potassium, x=latest_aa2r))+
+  ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Previous Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme + annotation_logticks(sides="b") 
 
-aa2r_scatter_next3 <- potassium_df %>% 
+ang2_aa2r_scatter_next3 <- potassium_df %>% 
   filter(days_to_next_aa2r <2,
          seven_days_since_hospital == 3) %>% 
-  ggplot(aes(y=potassium, x=next_aa2r))+
+  ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
-  ylab("Potassium (mmol/L)")+
+  ylab("Angiotensin 2 (mmol/L)")+
   xlab("Next Day Aldosterone-Angiotensin-2-Ratio (Logarithmic Scale)")+
   scy +
   scx+
   theme  + annotation_logticks(sides="b") 
 
-(aa2rpotscat <- cowplot::plot_grid( aa2r_fullscatter,aa2r_fullscatter_latest,aa2r_fullscatter_next, aa2r_scatter1,aa2r_scatter_latest1,aa2r_scatter_next1, aa2r_scatter2,aa2r_scatter_latest2,aa2r_scatter_next2,aa2r_scatter3,aa2r_scatter_latest3,aa2r_scatter_next3, label_size = 12, ncol=3, labels = "AUTO"))
+(aa2rpotscat <- cowplot::plot_grid( aa2r_fullscatter,aa2r_fullscatter_latest,aa2r_fullscatter_next, ang2_aa2r_scatter1,ang2_aa2r_scatter_latest1,ang2_aa2r_scatter_next1, ang2_aa2r_scatter2,ang2_aa2r_scatter_latest2,ang2_aa2r_scatter_next2,ang2_aa2r_scatter3,ang2_aa2r_scatter_latest3,ang2_aa2r_scatter_next3, label_size = 12, ncol=3, labels = "AUTO"))
 
-cowplot::save_plot('output/Lack of Correlation AA2-R and Pot.png', aa2rpotscat, ncol=3, nrow=4)
+cowplot::save_plot('output/Scatterplots AA2-R and Angiotensin 2.png', aa2rpotscat, ncol=3, nrow=4)
 
 
 
