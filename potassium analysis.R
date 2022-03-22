@@ -25,6 +25,7 @@ library(tidyr)
 library(broom)
 library(scales)
 library(flextable)
+library(ggrepel)
 
 
 
@@ -36,13 +37,10 @@ add_columns <- function(df, columns){
 
 # load files ----
 
-clinical_data      <- read_excel('data/SARS-FP_clinical_data_2020_08_01_NEW_NEW.xlsx')
+clinical_data      <- read_excel('data/data_update_20211202/SARS-FP_clinical_data_UPDATES_11_23_short_modified_prepSH.xlsx')
 group_ids          <- read_excel('data/new_category.xlsx') %>% rename(status = status3)
-lab_values_KFJ     <- read_tsv('data/ACOVACT_lab_all_ID_no_names_2020_09_22.txt', 
-                               col_names = c('source', 'variable', 'range_normal', 
-                                             'date_measurement', 'value', 'value_star', 'foo', 'pat_id')) 
 ACOVACT_lab_all_ID_no_names_2020_09_22 <- read.delim("data/ACOVACT_lab_all_ID_no_names_2020_09_22.txt")
-lab_values_RAS     <- read_excel('data/SARS-FP_RAS_measurments_all_NEW_2.0_NEW_new actvity marker.xlsx')
+lab_values_RAS     <- read_excel('data/data_update_20211202/SARS-FP_RAS_measurments_all_NEW_2.0_NEW_new actvity marker_additional.xlsx')
 ards_controls      <- read_excel('data/ARDS_controls_NEW.xlsx')
 healthy_controls   <- read_excel('data/healthy controls_age_sexNEW.xlsx')
 heart_controls     <- read_excel('data/heart_failure controls_NEW.xlsx')
@@ -73,11 +71,11 @@ resp_values        <- read_excel('data/resp_samples_Covid_19_ACE2_BUN_normalized
 saveRDS(resp_values, 'data/resp_values_prep.rds')
 
 ace_values <- read_excel('data/ACE_new.xlsx') %>%
-  rename(
-    measurement_id = `...1`
-  ) %>%
+  rename(measurement_id = `...1`) %>%
   filter(measurement_id != '346') %>%
-  mutate(ACE = as.numeric(ACE))
+  mutate(ACE = as.numeric(ACE)) %>% 
+  full_join(measurement_ids) %>% 
+  select(ACE,pat_id,date_measurement)
 
 # patient data ----
 
@@ -96,7 +94,9 @@ patients_pot <- clinical_data %>%
          date_death = death,
          diabetes = `diabetes (y/n)`,
          hypertension = `art hypertension (y/n)`,
-         copd = `COPD (y/n)`
+         copd = `COPD (y/n)`,
+         ace_inhibitor_ever = `ACEi (y/n)`,
+         arb_ever = `ARB (y/n)`,
          ) %>% 
   mutate(date_first_symptoms_asdate = as.Date(as.numeric(date_first_symptoms), origin = "1899-12-30"),
          date_first_test_asdate = as.Date(as.numeric(date_first_test), origin = "1899-12-30"),
@@ -107,15 +107,10 @@ patients_pot <- clinical_data %>%
           date_discharge_asdate = as.Date(as.numeric(date_hospital_discharge), origin = "1899-12-30"),
           date_death_asdate = as.Date(as.numeric(date_death), origin = "1899-12-30"),
          age = age/10,
-         severity = dplyr::case_when(
-           vent %in% 0        ~ 0,
-           vent %in% 1        ~ 1,
-           vent %in% c(2,3)   ~ 2,
-           vent %in% 4        ~ 3
-         ),
+         severity = factor(ifelse(vent<2,0,1), levels = c(0,1), labels = c('Non-Severe', 'Severe')),
          vent = factor(vent, levels = c(0,1,2,3,4), labels = c("None","Nasal O2","High Flow","Pressurized Mask","Intubation")),
-         severity = factor(severity, levels = c(0,1,2,3), labels = c('Asymptomatic', 'Mild', 'Severe', 'Critical')),
-         intubation = factor(ifelse(vent=="Intubation",1,0),levels=c(0,1), labels= c("Not Intubated", "Intubated"))) %>% 
+         intubation = factor(ifelse(vent=="Intubation",1,0),levels=c(0,1), labels= c("Not Intubated", "Intubated")),
+         RASi = factor(case_when(ace_inhibitor_ever == "yes" | arb_ever == "yes" ~1, TRUE ~ 0), levels=c(0,1),labels=c("No RAS-Inhibitor","RAS-Inhibitor"))) %>% 
   var_labels(vent="Breathing Assistance",
              intubation = "Ever Intubated",
              severity = "Severity by Respiratory Assistance")
@@ -145,10 +140,14 @@ measurement_ids <- clinical_data %>%
 
 ras_lab <- lab_values_RAS %>%
   rename('measurement_id' = '...1') %>%
-  select(ald = Aldosterone, pras = `PRA-S`, ang2 = `Ang II (1-8)`,
+  select(ald = Aldosterone, 
+         pras = `PRA-S`, 
+         ang2 = `Ang II (1-8)`,
+         ang1 = `Ang I (1-10)`,
+         aces = `ACE-S`,
          measurement_id)%>%
   full_join(measurement_ids) %>% 
-  select(pras, ald, date_measurement, pat_id,ang2)
+  select(date_measurement, pat_id, pras, ald, ang2, ang1, aces)
 
 
 # reformat meds ----
@@ -177,17 +176,20 @@ meds <- raw_meds %>%
 # potassium analysis time frame ----
 
 
-renamevars_pot <- c(potassium = 'Kalium')
+renamevars_pot <- c(potassium = 'Kalium', sod = 'Natrium', pot_urine = 'Kalium /U')
 
 potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
   distinct() %>%
+  mutate(Type= replace(Type ,Type=='Kalium art.', 'Kalium')) %>% 
+  filter(Type == as.vector(renamevars_pot)) %>% 
   pivot_wider(names_from = Type, values_from = Lab.values) %>%
   select(
     renamevars_pot,
     pat_id = 'ID',
     date_measurement_time = 'X.2') %>%
   pivot_longer(cols=names(renamevars_pot),names_to="names", values_to="values") %>%
-  mutate(date_measurement = as.Date(strptime(date_measurement_time, "%d.%m.%y %H:%M"))) %>%
+  mutate(date_measurement_time = strptime(date_measurement_time, "%d.%m.%y %H:%M"),
+         date_measurement = as.Date(date_measurement_time)) %>%
   filter(!is.na(as.numeric(values))) %>%
   arrange(date_measurement_time) %>%
   group_by(pat_id, date_measurement, names) %>%
@@ -206,21 +208,34 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
                              ifelse(!is.na(date_icu_discharge_asdate), date_icu_discharge_asdate, 
                                                        ifelse(!is.na(date_hospital_discharge_asdate), date_hospital_discharge_asdate, date_death_asdate))),
          in_icu = ifelse(date_measurement>=date_icu_asdate, ifelse(date_measurement<=end_of_icu, 1,0),0),
-         never_icu = factor(is.na(in_icu)*1, levels=c(0,1),labels=c("ICU", "Never ICU")),
+         never_icu = factor(is.na(date_icu_asdate)*1, levels=c(0,1),labels=c("ICU", "Never ICU")),
          icu_or_death = ifelse(!is.na(date_death), 1, ifelse(never_icu == 0, 1,0)),
          in_icu = ifelse(is.na(in_icu),0,in_icu),
-         days_from_icu_admission = as.numeric(date_measurement - date_icu_asdate)
+         days_from_icu_admission = as.numeric(date_measurement - date_icu_asdate),
+         five_days_since_hospital = ceiling((days_since_hospital+1)/ 5),
+         seven_days_since_hospital = ceiling((days_since_hospital+1)/ 7),
          ) %>% 
   full_join(insulin) %>%
   full_join(meds) %>% 
   full_join(ras_lab) %>% 
+  full_join(ace_values) %>% 
   group_by(pat_id) %>% 
+  filter(days_since_hospital %in% 0:20)%>% 
   #filter(ald>10) %>%
   mutate(aa2r_LOQ = factor(ifelse(ald<20, 1, ifelse(ang2<2, 1, 0)), levels = c(0,1), labels = c("Regular", "LOQ")),
          ald = ifelse(ald<20, 20, ald),
          pras = ifelse(pras < 10 , 10, pras),
          ang2 = ifelse(ang2 < 2 , 2, ang2),
-         aa2r = ald/ang2) %>% 
+         aa2r = ald/ang2,
+         hypoK = factor(ifelse(!is.na(potassium),ifelse(potassium<3.5,1,0),NA), levels=c(0,1), labels=c("No Hypokalemia", "Hypokalemia")),
+         ever_hypoK = factor(min(potassium,na.rm = TRUE)<3.5,levels=c(TRUE,FALSE),labels=c("Hypokalemia", "No Hypokalemia")),
+         severe_hypoK = factor(ifelse(!is.na(potassium),ifelse(potassium<3,1,0),NA), levels=c(0,1), labels=c("No Hypokalemia", "Hypokalemia")),
+         ever_severe_hypoK = factor(min(potassium,na.rm = TRUE)<3,levels=c(TRUE,FALSE),labels=c("Hypokalemia", "No Hypokalemia"))
+         , first_week_hypoK = factor(case_when(any(hypoK == "Hypokalemia" & seven_days_since_hospital == 1) ~ 1, TRUE ~0) , levels=c(0,1), labels = c("No Hypokalemia during First Week","Hypokalemia During First Week"))
+         , second_week_hypoK = factor(case_when(any(hypoK == "Hypokalemia" & seven_days_since_hospital == 2) ~ 1, TRUE ~0) , levels=c(0,1), labels = c("No Hypokalemia during Second Week","Hypokalemia During Second Week"))
+         , third_week_hypoK = factor(case_when(any(hypoK == "Hypokalemia" & seven_days_since_hospital == 3) ~ 1, TRUE ~0) , levels=c(0,1), labels = c("No Hypokalemia during Third Week","Hypokalemia During Third Week"))
+         
+         ) %>% 
   mutate_at(vars(latest_pot = potassium, # creating last values
                  latest_ald = ald,
                  latest_ang2 = ang2,
@@ -238,7 +253,8 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
   mutate_at(vars(next_ald = ald,   # creating next values 
             next_aa2r = aa2r,
             next_ang2 = ang2,
-            next_pras = pras
+            next_pras = pras,
+            next_pot = potassium
             ), lead)%>% 
   mutate_at(vars(latest_arb, # setting 0 of binary vars to na, so the latest time always only shows time of latest given medication
                  latest_acei,
@@ -266,6 +282,7 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
          next_ang2_date = as.Date(ifelse(!is.na(next_ang2),lead(date_measurement),NA), origin = "1970-01-01"),
          latest_pras_date = as.Date(ifelse(!is.na(latest_pras),lag(date_measurement),NA), origin = "1970-01-01"),
          next_pras_date = as.Date(ifelse(!is.na(next_pras),lead(date_measurement),NA), origin = "1970-01-01"),
+         next_pot_date = as.Date(ifelse(!is.na(next_pot),lead(date_measurement),NA), origin = "1970-01-01"),
          ) %>% 
   fill(latest_ald_date, latest_ald, # fill backwards empty slots of the latest values and dates
        latest_aa2r_date, latest_aa2r,
@@ -284,6 +301,7 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
        next_aa2r, next_aa2r_date,
        next_ang2, next_ang2_date,
        next_pras, next_pras_date,
+       next_pot, next_pot_date,
        .direction = "up") %>% 
   mutate(days_since_ald = as.numeric(date_measurement - latest_ald_date), # calculate differences in days from dates and changes in vars if needed
          days_since_pot = as.numeric(date_measurement - latest_pot_date),
@@ -302,7 +320,12 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
          days_to_next_ang2 = as.numeric(next_ang2_date - date_measurement),
          days_since_pras = as.numeric(date_measurement - latest_pras_date),
          days_to_next_pras = as.numeric(next_pras_date - date_measurement),
-         pot_change = potassium - latest_pot) %>% 
+         days_to_next_pot = as.numeric(next_pot_date - date_measurement),
+         pot_change = potassium - latest_pot,
+         Median_Potassium = median(potassium,na.rm=TRUE), 
+         Median_Aldosterone = median(ald,na.rm=TRUE) ,
+         median_ald_tert = factor(ntile(Median_Aldosterone,3), levels=c(1,2,3), labels=c("First", "Second", "Third")),
+         median_pot_tert = factor(ntile(Median_Potassium,3), levels=c(1,2,3), labels=c("First", "Second", "Third"))) %>% 
   ungroup %>% 
   tidyr::replace_na(replace=list(days_since_arb = 0,
              days_since_acei = 0,
@@ -328,12 +351,12 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
              pot_flush = 0,
              pot_supp = 0)) %>% 
   mutate(insulin = if_else(insulin=="yes",1,0,missing = 0),
-         five_days_since_hospital = ceiling((days_since_hospital+1)/ 5),
-         seven_days_since_hospital = ceiling((days_since_hospital+1)/ 7),
-         Diabetes= factor(diabetes, levels=c("yes","no"), labels=c("Yes","No"))) %>% 
+         Diabetes= factor(diabetes, levels=c("yes","no"), labels=c("Yes","No")),
+         pot_tert = factor(ntile(potassium,3), levels=c(1,2,3), labels=c("First", "Second", "Third")),
+         ald_tert = factor(ntile(ald,3), levels=c(1,2,3), labels=c("First", "Second", "Third"))
+         )%>% 
 #  mutate_at(vars(latest_arb,latest_acei,latest_mra,latest_thiazid,latest_loop_diuretic,latest_pot_flush,latest_pot_supp),as.factor) %>% 
-  filter(days_since_hospital %in% 0:20)%>% 
-  relocate(any_of(c("pat_id", "date_days", "potassium", "cat","latest_cat", "aa2r", "latest_aa2r", "next_aa2r", "never_icu","in_icu","date_icu_asdate","date_icu_discharge_asdate","date_hospital_discharge_asdate","date_death_asdate","num_date_death","date_death","end_of_icu","pat_id", "days_since_hospital", "seven_days_since_hospital","days_since_ald", "days_since_pot", "latest_pot_date", "latest_pot", "ald", "latest_ald", "latest_ald_date" )), .after=potassium)
+  relocate(any_of(c("pat_id", "date_days", "days_since_hospital", "seven_days_since_hospital", "potassium","first_week_hypoK", "second_week_hypoK", "third_week_hypoK","hypoK","pot_tert","hypoK","ever_hypoK","ald","ald_tert", "cat","latest_cat", "aa2r", "latest_aa2r", "next_aa2r", "never_icu","in_icu","date_icu_asdate","date_icu_discharge_asdate","date_hospital_discharge_asdate","date_death_asdate","num_date_death","date_death","end_of_icu","pat_id","days_since_ald", "days_since_pot", "latest_pot_date", "latest_pot", "ald", "latest_ald", "latest_ald_date" )), .after=potassium)
 
 
 potaldvars <- c("pat_id","in_icu","potassium","latest_ald","latest_pot","days_since_ald","days_since_pot","sex","age","days_since_hospital","days_since_test", "pot_supp", "days_since_arb", "days_since_acei","days_since_mra", "days_since_loop_diuretic", "days_since_thiazid", "days_since_pot_flush", "days_since_pot_supp", "latest_arb", "latest_acei", "latest_mra", "latest_loop_diuretic", "latest_thiazid", "latest_pot_flush", "latest_pot_supp", "latest_cat", "days_since_cat")
@@ -341,7 +364,7 @@ potaldvars <- c("pat_id","in_icu","potassium","latest_ald","latest_pot","days_si
 
 
 names(potassium_df)
-""
+
 ## vars "pat_id","potassium","latest_ald","latest_pot","latest_ald_date","latest_pot_date","sex","age","days_since_hospital"
 
 ## meds "insulin","beta-blocker","alpha-blocker","calcium channel blocker","alpha-2-agonist","kalzium antagonist",
@@ -362,8 +385,6 @@ hist(log10(potald$latest_ald))
 qqnorm(log10(potald$latest_ald))
 hist(log10(potald$latest_pot))
 qqnorm(log10(potald$latest_pot))
-hist(potald$pot_change)
-qqnorm(potald$pot_change)
 hist(log10(potald$potassium))
 qqnorm(log10(potald$potassium))
 hist(log10(potald$latest_ald*potald$days_since_ald))
@@ -422,7 +443,7 @@ plot_grid(dshhist, dshqq, labels = "AUTO")
 
 
 
-agehist<-potald %>% ggplot(aes(x=age)) +
+agehist<-potassium_df %>% ggplot(aes(x=ang2)) +
   geom_histogram(aes(y=..density..),color=1,fill="grey") +
   geom_density()
 ageqq<-potald %>% ggplot(aes(sample=age)) +
@@ -509,14 +530,19 @@ dev.off()
 
 #### Table One ####
 
-t1df <- potassium_df %>% group_by(pat_id) %>% mutate(Mean_Potassium = median(potassium,na.rm=TRUE), Mean_Aldosterone = median(ald,na.rm=TRUE))%>% 
+t1df <- potassium_df %>% group_by(pat_id) %>%
   filter(row_number()==1) %>% 
   ungroup %>%  
-  mutate(Age = age, Sex = factor(sex, levels=c("f","m"), labels=c("Female","Male")), BMI = bmi,
-            Hypertension = factor(hypertension, levels=c("yes","no"), labels=c("Yes","No")),
-            COPD = factor(copd, levels=c("yes","no"),labels=c("Yes","No")), 
-            pat_id, ICU = never_icu, Potassium = potassium, Aldosterone = ald) %>% 
-  var_labels(Age = "Age (years)",BMI = "BMI (kg/m²)", Mean_Potassium ="Serum Potassium (mmol/L)", Mean_Aldosterone= "Serum Aldosterone (pmol/L)", ICU = "ICU stay")
+  mutate(Age = age
+         , Sex = factor(sex, levels=c("f","m"), labels=c("Female","Male"))
+         , BMI = bmi
+         , Hypertension = factor(hypertension, levels=c("yes","no"), labels=c("Yes","No"))
+         , COPD = factor(copd, levels=c("yes","no"),labels=c("Yes","No"))
+         , pat_id, ICU = never_icu
+         , Potassium = potassium
+         , Aldosterone = ald
+         ) %>% 
+  var_labels(Age = "Age (years)",BMI = "BMI (kg/m²)", ICU = "ICU stay")
 
 
 my_plots <- lapply(names(t1df), function(var_x){
@@ -533,330 +559,1139 @@ my_plots <- lapply(names(t1df), function(var_x){
 
 plot_grid(my_plots)
 
-(t1 <- table1(~ Age + BMI + Diabetes + Hypertension + COPD + ICU + Mean_Potassium + Mean_Aldosterone  | Sex, data=t1df, render.continuous="Median [Q1,Q3]"))
+(t1 <- table1(~ Age + BMI + Diabetes + Hypertension + COPD + ICU + Median_Potassium + Median_Aldosterone + ever_hypoK + first_week_hypoK +second_week_hypoK +third_week_hypoK  | Sex, data=t1df, render.continuous="Median [Q1,Q3]"))
 
 write.table(t1,file="output/T1.png")
+
+
+#### Hypokalemia over Time ####
+
+dayframe <- potassium_df %>% select(pat_id) %>% group_by(pat_id) %>% filter(row_number()==1) %>% slice(rep(1,21)) %>%  ungroup %>% add_column(days_since_hospital =rep(0:20,119))
+
+(dayframe %>% left_join(potassium_df) %>% fill(hypoK,.direction="downup") %>%  select(days_since_hospital,hypoK)%>% gather(key, value, hypoK) %>% 
+  count(days_since_hospital, key, value) %>% spread(value, n, fill=0) %>% 
+  gather(key="daycount", value = "Hypokalemic", c(Hypokalemia)) %>% 
+  ggplot(aes(x=days_since_hospital,y=Hypokalemic)) +
+  geom_line() + 
+  xlab("Days since Hospitalization")+ 
+  theme_cowplot(12))
+
+
+#### Urine Potassium ####
+
+potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium), 
+                        days_to_next_pot = ifelse(is.na(potassium), days_to_next_pot, 0),
+                        latest_pras= ifelse(is.na(pras), latest_pras, pras),
+                        days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
+                        latest_ald= ifelse(is.na(ald), latest_ald, ald), 
+                        days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
+  ggplot(aes(x=days_since_hospital,y=pot_urine, color=next_pot)) + geom_point()+  geom_text_repel(aes(label=days_to_next_pot))+
+  geom_line(aes(group=pat_id))+
+  ylab("Potassium in Urine")+ 
+  xlab("Days since Hospitalization") +
+  scale_colour_gradientn(colours = c("red","green","yellow"),breaks = c(3.5,4.5,5.5), limits=c(2.5,6.5))+ 
+  labs(color = "Next Serum Potassium")+ 
+  theme_cowplot(12)
+
+potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium), 
+                        days_to_next_pot = ifelse(is.na(potassium), days_to_next_pot, 0),
+                        latest_pras= ifelse(is.na(pras), latest_pras, pras),
+                        days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
+                        latest_ald= ifelse(is.na(ald), latest_ald, ald), 
+                        days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
+  ggplot(aes(x=days_since_hospital,y=pot_urine, color=latest_pras)) + geom_point()+  geom_text_repel(aes(label=days_since_pras))+
+  ylab("Potassium in Urine")+ 
+  xlab("Days since Hospitalization") +
+  scale_colour_gradientn(colours = c("red","green","yellow"),breaks = c(50,400,3000),trans="log")+ 
+  labs(color = "Latest PRAS")+ 
+  theme_cowplot(12)
+
+potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium), 
+                        days_to_next_pot = ifelse(is.na(potassium), days_to_next_pot, 0),
+                        latest_ald= ifelse(is.na(ald), latest_ald, ald), 
+                        days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
+  ggplot(aes(x=next_pot,y=pot_urine, color=latest_ald)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_ald))+
+  ylab("Potassium in Urine")+ 
+  xlab("Next Serum Potassium")+ 
+  scale_colour_gradientn(colours = c("darkgreen","green","yellow","red"),breaks = c(50,150,400),trans="log")+ 
+  labs(color = "Latest Aldosterone")+ 
+  theme_cowplot(12)
+
+
+
+potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium), 
+                        days_to_next_pot = ifelse(is.na(potassium), days_to_next_pot, 0),
+                           latest_pras= ifelse(is.na(pras), latest_pras, pras),
+                           days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
+                           latest_ald= ifelse(is.na(ald), latest_ald, ald),
+                           days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
+  ggplot(aes(x=latest_ald,y=pot_urine, color=latest_pras)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_pras))+
+  ylab("Potassium in Urine")+ 
+  xlab("Latest Serum Aldosterone")+ 
+  scale_colour_gradientn(colours = c("darkgreen","green","yellow","red"),breaks = c(50,400,3000),trans="log")+ 
+  labs(color = "Latest PRAS")+ 
+  theme_cowplot(12)+
+  scale_x_log10() + annotation_logticks(sides="b") 
+
+potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium), 
+                        days_to_next_pot = ifelse(is.na(potassium), days_to_next_pot, 0),
+                        latest_pras= ifelse(is.na(pras), latest_pras, pras),
+                        days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
+                        latest_ald= ifelse(is.na(ald), latest_ald, ald),
+                        days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
+  ggplot(aes(x=latest_pras,y=pot_urine, color=latest_ald)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_pras))+
+  ylab("Potassium in Urine")+ 
+  xlab("Latest PRAS")+ 
+  scale_colour_gradientn(colours = c("darkgreen","green","yellow","red"),breaks = c(50,400,3000),trans="log")+ 
+  labs(color = "Latest Aldosterone")+ 
+  theme_cowplot(12)+
+  scale_x_log10() + annotation_logticks(sides="b") 
+
+min(potassium_df$potassium, na.rm=TRUE)
+
+#### Table of tertiles ####
+
+tertile_df <- potassium_df %>%  
+  mutate(Aldosterone = ald, 
+         Potassium = potassium, 
+         Age = age*10, 
+         ICU = never_icu, 
+         BMI = bmi, 
+         Sex = factor(sex, levels=c("m","f"),labels=c("Male","Female"))
+         )%>% 
+  var_labels(Age = "Age (years)"
+             , BMI = "BMI (kg/m²)"
+             , Potassium ="Serum Potassium (mmol/L)"
+             , Aldosterone= "Serum Aldosterone (pmol/L)"
+             , ICU = "ICU stay"
+             , Median_Potassium ="Serum Potassium (mmol/L)"
+             , Median_Aldosterone= "Serum Aldosterone (pmol/L)"
+             )
+
+
+(t2 <- table1(~ Potassium + Age + BMI + Sex + Aldosterone + ICU | ald_tert, data=tertile_df, render.continuous="Median [Q1,Q3]", output = "html", test=TRUE))
+
+write.table(t2, file= "output/Tertiles Aldosterone Table.html")
+
+
 
 
 #### Smooth Plots ####
 
 
 
-total_aldplot <- potassium_df %>% 
-  ggplot(aes(x=days_since_hospital,y=ald)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
-  ylab("Aldosterone (pmol/L,Log Scale)")+
-  xlab("Days since hospitalization")+
-  theme(legend.title = element_blank())+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
+
+# potassium
 
 total_potplot <- potassium_df%>% 
   ggplot(aes(x=days_since_hospital,y=potassium)) +  
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
+  geom_smooth( col="grey0", alpha = 0.2)+
   theme_cowplot(12) +
   ylab("Potassium (mmol/L)")+
   xlab("Days since hospitalization")+
-  theme(legend.title = element_blank())+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+  scale_y_continuous()
 
-total_aa2rplot <- potassium_df %>% 
-  ggplot(aes(x=days_since_hospital,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
+test_total_potplot <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=potassium)) +  
+  geom_smooth( col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+potICUplot <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
+  geom_smooth( col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+
+
+# sodium
+
+total_sodplot <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=sod)) +  
+  geom_smooth( col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
   xlab("Days since hospitalization")+
-  theme(legend.title = element_blank())+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_continuous()
+
+test_total_sodplot <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=sod)) +  
+  geom_smooth( col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+sodICUplot <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=sod)) +  
+  geom_smooth( col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+
+# aldosterone
+
+total_aldplot <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L,Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
 
 test_total_aldplot <- potassium_df %>% 
   ggplot(aes(x=days_since_test,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2) +
+  geom_smooth( col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L, Log Scale)")+
   xlab("Days since test")+
-  theme(legend.title = element_blank())+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-test_total_potplot <- potassium_df%>% 
-  ggplot(aes(x=days_since_test,y=potassium)) +  
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since test")+  
-  theme(legend.title = element_blank())+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-test_total_aa2rplot <- potassium_df %>% 
-  ggplot(aes(x=days_since_test,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2) +
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days since test")+
-  theme(legend.title = element_blank())+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
 
 aldICUplot <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2) +
+  geom_smooth( col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L, Log Scale)")+
   xlab("Days from ICU admission")+
-  theme(legend.title = element_blank())+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
+  scale_y_log10()
 
-potICUplot <- potassium_df %>% 
-  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days from ICU admission")+
-  theme(legend.title = element_blank())+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+# aa2r
+
+total_aa2rplot <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aa2rplot <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
 
 aa2rICUplot <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
   theme_cowplot(12)+
-  geom_smooth(aes(group=never_icu, linetype=never_icu),col="grey0", alpha = 0.2) +
+  geom_smooth( col="grey0", alpha = 0.2)+
   ylab("AA2-Ratio (Log Scale)")+
   xlab("Days from ICU admission")+
-  theme(legend.title = element_blank())+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
+
+# ang2
 
 
-smoothplots_nolegend <- cowplot::plot_grid(total_potplot + theme(legend.position="none")
-                                  ,test_total_potplot + theme(legend.position="none")
-                                  ,potICUplot + theme(legend.position="none")
-                                  ,total_aldplot + theme(legend.position="none")
-                                  ,test_total_aldplot + theme(legend.position="none")
-                                  ,aldICUplot + theme(legend.position="none")
-                                  ,total_aa2rplot + theme(legend.position="none")
-                                  ,test_total_aa2rplot + theme(legend.position="none")
-                                  ,aa2rICUplot + theme(legend.position="none")
-                                  , labels="AUTO", label_size = 12, ncol=3, nrow=3)
+total_ang2plot <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang2plot <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang2ICUplot <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
 
 
-legend <- cowplot::get_legend(total_aldplot+ labs(linetype = "ICU Admission",col = "ICU Admission"))
 
-smoothplots <- cowplot::plot_grid(smoothplots_nolegend,legend, ncol=2, rel_widths = c(2,.2))
-
+# ang1
 
 
-cowplot::save_plot('output/Trend of Ald, AA2-R and Pot by ICU Admission.png', smoothplots, ncol=3, nrow=3)
+total_ang1plot <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
 
+test_total_ang1plot <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang1ICUplot <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+# pras
+
+
+
+total_prasplot <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_prasplot <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+prasICUplot <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+# ACE
+
+
+
+total_ACEplot <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ACEplot <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ACEICUplot <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth( col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+(smoothplots_nolegend <- cowplot::plot_grid(total_potplot + theme(legend.position="none"),
+                                                      test_total_potplot + theme(legend.position="none"),
+                                                      potICUplot + theme(legend.position="none"),
+                                                      total_sodplot + theme(legend.position="none"),
+                                                      test_total_sodplot + theme(legend.position="none"),
+                                                      sodICUplot + theme(legend.position="none"),
+                                                      total_aldplot + theme(legend.position="none"),
+                                                      test_total_aldplot + theme(legend.position="none"),
+                                                      aldICUplot + theme(legend.position="none"),
+                                                      total_aa2rplot + theme(legend.position="none"),
+                                                      test_total_aa2rplot +theme(legend.position="none"),
+                                                      aa2rICUplot + theme(legend.position="none"),
+                                                      total_ang2plot + theme(legend.position="none"),
+                                                      test_total_ang2plot +theme(legend.position="none"),
+                                                      ang2ICUplot + theme(legend.position="none"),
+                                                      total_ACEplot + theme(legend.position="none"),
+                                                      test_total_ACEplot +theme(legend.position="none"),
+                                                      ACEICUplot + theme(legend.position="none"),
+                                                      total_ang1plot + theme(legend.position="none"),
+                                                      test_total_ang1plot +theme(legend.position="none"),
+                                                      ang1ICUplot + theme(legend.position="none"),
+                                                      total_prasplot + theme(legend.position="none"),
+                                                      test_total_prasplot +theme(legend.position="none"),
+                                                      prasICUplot + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=8))
+
+cowplot::save_plot('output/RAS Potassium Axis.png', smoothplots_nolegend, ncol=3, nrow=8)
+
+#### Smooth Plots by ICU####
+
+
+# potassium
+
+total_potplot_never_icu <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=potassium)) +  
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_potplot_never_icu <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=potassium)) +  
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+potICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+# sodium
+
+total_sodplot_never_icu <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=sod)) +  
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_sodplot_never_icu <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=sod)) +  
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+sodICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=sod)) +  
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+
+# aldosterone
+
+total_aldplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L,Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aldplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+aldICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# aa2r
+
+total_aa2rplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aa2rplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+aa2rICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# ang2
+
+
+total_ang2plot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang2plot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang2ICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+
+# ang1
+
+
+total_ang1plot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang1plot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang1ICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# pras
+
+total_prasplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_prasplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+prasICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# ACE
+
+total_ACEplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ACEplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ACEICUplot_never_icu <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=never_icu, linetype=never_icu), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+legend <- cowplot::get_legend(total_aldplot_never_icu+ labs(linetype = "Ever ICU"))
+
+smoothplots_never_icu_nolegend <- cowplot::plot_grid(total_potplot_never_icu + theme(legend.position="none"),
+                                                      test_total_potplot_never_icu + theme(legend.position="none"),
+                                                      potICUplot_never_icu + theme(legend.position="none"),
+                                                      total_sodplot_never_icu + theme(legend.position="none"),
+                                                      test_total_sodplot_never_icu + theme(legend.position="none"),
+                                                      sodICUplot_never_icu + theme(legend.position="none"),
+                                                      total_aldplot_never_icu + theme(legend.position="none"),
+                                                      test_total_aldplot_never_icu + theme(legend.position="none"),
+                                                      aldICUplot_never_icu + theme(legend.position="none"),
+                                                      total_aa2rplot_never_icu + theme(legend.position="none"),
+                                                      test_total_aa2rplot_never_icu +theme(legend.position="none"),
+                                                      aa2rICUplot_never_icu + theme(legend.position="none"),
+                                                      total_ang2plot_never_icu + theme(legend.position="none"),
+                                                      test_total_ang2plot_never_icu +theme(legend.position="none"),
+                                                      ang2ICUplot_never_icu + theme(legend.position="none"),
+                                                      total_ACEplot_never_icu + theme(legend.position="none"),
+                                                      test_total_ACEplot_never_icu +theme(legend.position="none"),
+                                                      ACEICUplot_never_icu + theme(legend.position="none"),
+                                                      total_ang1plot_never_icu + theme(legend.position="none"),
+                                                      test_total_ang1plot_never_icu +theme(legend.position="none"),
+                                                      ang1ICUplot_never_icu + theme(legend.position="none"),
+                                                      total_prasplot_never_icu + theme(legend.position="none"),
+                                                      test_total_prasplot_never_icu +theme(legend.position="none"),
+                                                      prasICUplot_never_icu + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=8)
+
+smoothplots_never_icu <- cowplot::plot_grid(smoothplots_never_icu_nolegend,legend, ncol=2, rel_widths = c(2,.2))
+
+cowplot::save_plot('output/RAS Potassium Axis by ICU.png', smoothplots_never_icu, ncol=3, nrow=8)
+
+#### Smooth Plots by severity####
+
+
+# potassium
+
+total_potplot_severity <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=potassium)) +  
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_potplot_severity <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=potassium)) +  
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+potSeverityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days from Severity admission")+
+  scale_y_continuous()
+
+# sodium
+
+total_sodplot_severity <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=sod)) +  
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_sodplot_severity <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=sod)) +  
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+sodSeverityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=sod)) +  
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days from Severity admission")+
+  scale_y_continuous()
+
+
+# aldosterone
+
+total_aldplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L,Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aldplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+aldSeverityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days from Severity admission")+
+  scale_y_log10()
+
+# aa2r
+
+total_aa2rplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aa2rplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+aa2rSeverityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days from Severity admission")+
+  scale_y_log10()
+
+# ang2
+
+
+total_ang2plot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang2plot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang2Severityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days from Severity admission")+
+  scale_y_log10()
+
+
+
+# ang1
+
+
+total_ang1plot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang1plot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang1Severityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days from Severity admission")+
+  scale_y_log10()
+
+# pras
+
+total_prasplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_prasplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+prasSeverityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days from Severity admission")+
+  scale_y_log10()
+
+# ACE
+
+total_ACEplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ACEplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ACESeverityplot_severity <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=severity, linetype=severity), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days from Severity admission")+
+  scale_y_log10()
+
+legend <- cowplot::get_legend(total_aldplot_severity+ labs(linetype = "Ever Severity"))
+
+smoothplots_severity_nolegend <- cowplot::plot_grid(total_potplot_severity + theme(legend.position="none"),
+                                                     test_total_potplot_severity + theme(legend.position="none"),
+                                                     potSeverityplot_severity + theme(legend.position="none"),
+                                                     total_sodplot_severity + theme(legend.position="none"),
+                                                     test_total_sodplot_severity + theme(legend.position="none"),
+                                                     sodSeverityplot_severity + theme(legend.position="none"),
+                                                     total_aldplot_severity + theme(legend.position="none"),
+                                                     test_total_aldplot_severity + theme(legend.position="none"),
+                                                     aldSeverityplot_severity + theme(legend.position="none"),
+                                                     total_aa2rplot_severity + theme(legend.position="none"),
+                                                     test_total_aa2rplot_severity +theme(legend.position="none"),
+                                                     aa2rSeverityplot_severity + theme(legend.position="none"),
+                                                     total_ang2plot_severity + theme(legend.position="none"),
+                                                     test_total_ang2plot_severity +theme(legend.position="none"),
+                                                     ang2Severityplot_severity + theme(legend.position="none"),
+                                                     total_ACEplot_severity + theme(legend.position="none"),
+                                                     test_total_ACEplot_severity +theme(legend.position="none"),
+                                                     ACESeverityplot_severity + theme(legend.position="none"),
+                                                     total_ang1plot_severity + theme(legend.position="none"),
+                                                     test_total_ang1plot_severity +theme(legend.position="none"),
+                                                     ang1Severityplot_severity + theme(legend.position="none"),
+                                                     total_prasplot_severity + theme(legend.position="none"),
+                                                     test_total_prasplot_severity +theme(legend.position="none"),
+                                                     prasSeverityplot_severity + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=8)
+
+smoothplots_severity <- cowplot::plot_grid(smoothplots_severity_nolegend,legend, ncol=2, rel_widths = c(2,.2))
+
+cowplot::save_plot('output/RAS Potassium Axis by Severity.png', smoothplots_severity, ncol=3, nrow=8)
 
 
 #### Smooth Plots by Ventilation####
 
 
+# potassium
+
+total_potplot_vent <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=potassium)) +  
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_potplot_vent <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=potassium)) +  
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+potICUplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+# sodium
+
+total_sodplot_vent <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=sod)) +  
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_sodplot_vent <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=sod)) +  
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+sodICUplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=sod)) +  
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+
+# aldosterone
 
 total_aldplot_vent <- potassium_df %>% 
   ggplot(aes(x=days_since_hospital,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L,Log Scale)")+
   xlab("Days since hospitalization")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-total_potplot_vent <- potassium_df%>% 
-  ggplot(aes(x=days_since_hospital,y=potassium)) +  
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-total_aa2rplot_vent <- potassium_df %>% 
-  ggplot(aes(x=days_since_hospital,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days since hospitalization")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
 
 test_total_aldplot_vent <- potassium_df %>% 
   ggplot(aes(x=days_since_test,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L, Log Scale)")+
   xlab("Days since test")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-test_total_potplot_vent <- potassium_df%>% 
-  ggplot(aes(x=days_since_test,y=potassium)) +  
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since test")+  
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-test_total_aa2rplot_vent <- potassium_df %>% 
-  ggplot(aes(x=days_since_test,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days since test")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
 
 aldICUplot_vent <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=ald)) +
   theme_cowplot(12)+
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L, Log Scale)")+
   xlab("Days from ICU admission")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
+  scale_y_log10()
 
-potICUplot_vent <- potassium_df %>% 
-  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days from ICU admission")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+# aa2r
+
+total_aa2rplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aa2rplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
 
 aa2rICUplot_vent <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
   theme_cowplot(12)+
-  geom_smooth(aes(group=vent, linetype=vent, col=vent), alpha = 0.2)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
   ylab("AA2-Ratio (Log Scale)")+
   xlab("Days from ICU admission")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
 
-legend <- cowplot::get_legend(total_aldplot_vent+ labs(linetype = "Breathing Assistance",col = "Breathing Assistance"))
+# ang2
+
+
+total_ang2plot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang2plot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang2ICUplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+
+# ang1
+
+
+total_ang1plot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang1plot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang1ICUplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# pras
+
+total_prasplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_prasplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+prasICUplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# ACE
+
+total_ACEplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ACEplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ACEICUplot_vent <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=vent, linetype=vent), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+legend <- cowplot::get_legend(total_aldplot_vent+ labs(linetype = "Breathing Assistance"))
 
 smoothplots_vent_nolegend <- cowplot::plot_grid(total_potplot_vent + theme(legend.position="none"),
-                                                test_total_potplot_vent + theme(legend.position="none"),
-                                                potICUplot_vent + theme(legend.position="none"),
-                                                total_aldplot_vent + theme(legend.position="none"),
-                                                test_total_aldplot_vent + theme(legend.position="none"),
-                                                aldICUplot_vent + theme(legend.position="none"),
-                                                total_aa2rplot_vent + theme(legend.position="none"),
-                                                test_total_aa2rplot_vent +theme(legend.position="none"),
-                                                aa2rICUplot_vent + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=3)
+                                                     test_total_potplot_vent + theme(legend.position="none"),
+                                                     potICUplot_vent + theme(legend.position="none"),
+                                                     total_sodplot_vent + theme(legend.position="none"),
+                                                     test_total_sodplot_vent + theme(legend.position="none"),
+                                                     sodICUplot_vent + theme(legend.position="none"),
+                                                     total_aldplot_vent + theme(legend.position="none"),
+                                                     test_total_aldplot_vent + theme(legend.position="none"),
+                                                     aldICUplot_vent + theme(legend.position="none"),
+                                                     total_aa2rplot_vent + theme(legend.position="none"),
+                                                     test_total_aa2rplot_vent +theme(legend.position="none"),
+                                                     aa2rICUplot_vent + theme(legend.position="none"),
+                                                     total_ang2plot_vent + theme(legend.position="none"),
+                                                     test_total_ang2plot_vent +theme(legend.position="none"),
+                                                     ang2ICUplot_vent + theme(legend.position="none"),
+                                                     total_ACEplot_vent + theme(legend.position="none"),
+                                                     test_total_ACEplot_vent +theme(legend.position="none"),
+                                                     ACEICUplot_vent + theme(legend.position="none"),
+                                                     total_ang1plot_vent + theme(legend.position="none"),
+                                                     test_total_ang1plot_vent +theme(legend.position="none"),
+                                                     ang1ICUplot_vent + theme(legend.position="none"),
+                                                     total_prasplot_vent + theme(legend.position="none"),
+                                                     test_total_prasplot_vent +theme(legend.position="none"),
+                                                     prasICUplot_vent + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=8)
+
 smoothplots_vent <- cowplot::plot_grid(smoothplots_vent_nolegend,legend, ncol=2, rel_widths = c(2,.2))
 
-
-cowplot::save_plot('output/Trend of Ald, AA2-R and Pot by Maximum Ventilation Type.png', smoothplots_vent, ncol=3, nrow=3)
-
-
-#### Smooth Plots by Severity####
-
-
-
-total_aldplot_severity <- potassium_df %>% 
-  ggplot(aes(x=days_since_hospital,y=ald)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  ylab("Aldosterone (pmol/L,Log Scale)")+
-  xlab("Days since hospitalization")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-total_potplot_severity <- potassium_df%>% 
-  ggplot(aes(x=days_since_hospital,y=potassium)) +  
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-total_aa2rplot_severity <- potassium_df %>% 
-  ggplot(aes(x=days_since_hospital,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days since hospitalization")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
-
-test_total_aldplot_severity <- potassium_df %>% 
-  ggplot(aes(x=days_since_test,y=ald)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  ylab("Aldosterone (pmol/L, Log Scale)")+
-  xlab("Days since test")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-test_total_potplot_severity <- potassium_df%>% 
-  ggplot(aes(x=days_since_test,y=potassium)) +  
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since test")+  
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-test_total_aa2rplot_severity <- potassium_df %>% 
-  ggplot(aes(x=days_since_test,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days since test")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
-
-aldICUplot_severity <- potassium_df %>% 
-  ggplot(aes(x=days_from_icu_admission,y=ald)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  ylab("Aldosterone (pmol/L, Log Scale)")+
-  xlab("Days from ICU admission")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-potICUplot_severity <- potassium_df %>% 
-  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days from ICU admission")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-aa2rICUplot_severity <- potassium_df %>% 
-  ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=severity, linetype=severity, col=severity), alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days from ICU admission")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
-
-legend <- cowplot::get_legend(total_aldplot_severity+ labs(linetype = "Severity",col = "Severity"))
-
-smoothplots_severity_nolegend <- cowplot::plot_grid(total_potplot_severity + theme(legend.position="none"),
-                                                test_total_potplot_severity + theme(legend.position="none"),
-                                                potICUplot_severity + theme(legend.position="none"),
-                                                total_aldplot_severity + theme(legend.position="none"),
-                                                test_total_aldplot_severity + theme(legend.position="none"),
-                                                aldICUplot_severity + theme(legend.position="none"),
-                                                total_aa2rplot_severity + theme(legend.position="none"),
-                                                test_total_aa2rplot_severity +theme(legend.position="none"),
-                                                aa2rICUplot_severity + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=3)
-smoothplots_severity <- cowplot::plot_grid(smoothplots_severity_nolegend,legend, ncol=2, rel_widths = c(2,.2))
-
-
-cowplot::save_plot('output/Trend of Ald, AA2-R and Pot by Maximum Severity.png', smoothplots_severity, ncol=3, nrow=3)
+cowplot::save_plot('output/RAS Potassium Axis by Ventilation.png', smoothplots_vent, ncol=3, nrow=8)
 
 
 #### Smooth Plots by Intubation####
 
+# aldosterone
+
 total_aldplot_intubation <- potassium_df %>% 
   ggplot(aes(x=days_since_hospital,y=ald)) +
-  theme_cowplot(12)+
+  theme_cowplot(12)
   geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L,Log Scale)")+
   xlab("Days since hospitalization")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-total_potplot_intubation <- potassium_df%>% 
-  ggplot(aes(x=days_since_hospital,y=potassium)) +  
-  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since hospitalization")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-total_aa2rplot_intubation <- potassium_df %>% 
-  ggplot(aes(x=days_since_hospital,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days since hospitalization")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
 
 test_total_aldplot_intubation <- potassium_df %>% 
   ggplot(aes(x=days_since_test,y=ald)) +
@@ -864,23 +1699,7 @@ test_total_aldplot_intubation <- potassium_df %>%
   geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L, Log Scale)")+
   xlab("Days since test")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
-
-test_total_potplot_intubation <- potassium_df%>% 
-  ggplot(aes(x=days_since_test,y=potassium)) +  
-  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
-  theme_cowplot(12) +
-  ylab("Potassium (mmol/L)")+
-  xlab("Days since test")+  
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
-
-test_total_aa2rplot_intubation <- potassium_df %>% 
-  ggplot(aes(x=days_since_test,y=aa2r)) +
-  theme_cowplot(12)+
-  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
-  ylab("AA2-Ratio (Log Scale)")+
-  xlab("Days since test")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
 
 aldICUplot_intubation <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=ald)) +
@@ -888,7 +1707,27 @@ aldICUplot_intubation <- potassium_df %>%
   geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
   ylab("Aldosterone (pmol/L, Log Scale)")+
   xlab("Days from ICU admission")+
-  scale_y_log10(limits=c(9,100), n.breaks=10)
+  scale_y_log10()
+
+
+# potassium
+
+total_potplot_intubation <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=potassium)) +  
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_potplot_intubation <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=potassium)) +  
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
 
 potICUplot_intubation <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
@@ -896,7 +1735,56 @@ potICUplot_intubation <- potassium_df %>%
   theme_cowplot(12) +
   ylab("Potassium (mmol/L)")+
   xlab("Days from ICU admission")+
-  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+  scale_y_continuous()
+
+
+
+# sodium
+
+total_sodplot_intubation <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=sod)) +  
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_sodplot_intubation <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=sod)) +  
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+sodICUplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=sod)) +  
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+
+
+# aa2r
+
+total_aa2rplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aa2rplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
 
 aa2rICUplot_intubation <- potassium_df %>% 
   ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
@@ -904,23 +1792,676 @@ aa2rICUplot_intubation <- potassium_df %>%
   geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
   ylab("AA2-Ratio (Log Scale)")+
   xlab("Days from ICU admission")+
-  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+  scale_y_log10()
+
+# ang2
+
+
+total_ang2plot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang2plot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang2ICUplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+
+# ang1
+
+
+total_ang1plot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang1plot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang1ICUplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+# pras
+
+
+
+total_prasplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=pras)) +
+  theme_cowplot(12)
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_prasplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+prasICUplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+# ACE
+
+
+
+total_ACEplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ACEplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ACEICUplot_intubation <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=intubation, linetype=intubation), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+
+
 
 legend <- cowplot::get_legend(total_aldplot_intubation+ labs(linetype = "Ever Intubated"))
 
 smoothplots_intubation_nolegend <- cowplot::plot_grid(total_potplot_intubation + theme(legend.position="none"),
                                                     test_total_potplot_intubation + theme(legend.position="none"),
                                                     potICUplot_intubation + theme(legend.position="none"),
+                                                    total_sodplot_intubation + theme(legend.position="none"),
+                                                    test_total_sodplot_intubation + theme(legend.position="none"),
+                                                    sodICUplot_intubation + theme(legend.position="none"),
                                                     total_aldplot_intubation + theme(legend.position="none"),
                                                     test_total_aldplot_intubation + theme(legend.position="none"),
                                                     aldICUplot_intubation + theme(legend.position="none"),
                                                     total_aa2rplot_intubation + theme(legend.position="none"),
                                                     test_total_aa2rplot_intubation +theme(legend.position="none"),
-                                                    aa2rICUplot_intubation + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=3)
+                                                    aa2rICUplot_intubation + theme(legend.position="none"),
+                                                    total_ang2plot_intubation + theme(legend.position="none"),
+                                                    test_total_ang2plot_intubation +theme(legend.position="none"),
+                                                    ang2ICUplot_intubation + theme(legend.position="none"),
+                                                    total_ACEplot_intubation + theme(legend.position="none"),
+                                                    test_total_ACEplot_intubation +theme(legend.position="none"),
+                                                    ACEICUplot_intubation + theme(legend.position="none"),
+                                                    total_ang1plot_intubation + theme(legend.position="none"),
+                                                    test_total_ang1plot_intubation +theme(legend.position="none"),
+                                                    ang1ICUplot_intubation + theme(legend.position="none"),
+                                                    total_prasplot_intubation + theme(legend.position="none"),
+                                                    test_total_prasplot_intubation +theme(legend.position="none"),
+                                                    prasICUplot_intubation + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=8)
 
 smoothplots_intubation <- cowplot::plot_grid(smoothplots_intubation_nolegend,legend, ncol=2, rel_widths = c(2,.2))
 
-cowplot::save_plot('output/Trend of Ald, AA2-R and Pot by Intubation.png', smoothplots_intubation, ncol=3, nrow=3)
+cowplot::save_plot('output/RAS Potassium Axis by Intubation.png', smoothplots_intubation, ncol=3, nrow=7)
+
+
+
+
+#### Smooth Plots by Ever Hypokalemia####
+
+
+# potassium
+
+total_potplot_ever_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=potassium)) +  
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_potplot_ever_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=potassium)) +  
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+potICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+
+
+# sodium
+
+total_sodplot_ever_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=sod)) +  
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous()
+
+test_total_sodplot_ever_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=sod)) +  
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous()
+
+
+sodICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=sod)) +  
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous()
+
+
+# aldosterone
+
+total_aldplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L,Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aldplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+aldICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# aa2r
+
+total_aa2rplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_aa2rplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+aa2rICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+# ang2
+
+
+total_ang2plot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang2plot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang2ICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+
+# ang1
+
+
+total_ang1plot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ang1plot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ang1ICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+# pras
+
+
+
+total_prasplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_prasplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+prasICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+# ACE
+
+
+
+total_ACEplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10()
+
+test_total_ACEplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10()
+
+ACEICUplot_ever_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_hypoK, linetype=ever_hypoK), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10()
+
+
+
+
+
+legend <- cowplot::get_legend(total_aldplot_ever_hypoK+ labs(linetype = "Ever Hypokalemic"))
+
+smoothplots_ever_hypoK_nolegend <- cowplot::plot_grid(total_potplot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_potplot_ever_hypoK + theme(legend.position="none"),
+                                                      potICUplot_ever_hypoK + theme(legend.position="none"),
+                                                      total_sodplot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_sodplot_ever_hypoK + theme(legend.position="none"),
+                                                      sodICUplot_ever_hypoK + theme(legend.position="none"),
+                                                      total_aldplot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_aldplot_ever_hypoK + theme(legend.position="none"),
+                                                      aldICUplot_ever_hypoK + theme(legend.position="none"),
+                                                      total_aa2rplot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_aa2rplot_ever_hypoK +theme(legend.position="none"),
+                                                      aa2rICUplot_ever_hypoK + theme(legend.position="none"),
+                                                      total_ang2plot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_ang2plot_ever_hypoK +theme(legend.position="none"),
+                                                      ang2ICUplot_ever_hypoK + theme(legend.position="none"),
+                                                      total_ACEplot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_ACEplot_ever_hypoK +theme(legend.position="none"),
+                                                      ACEICUplot_ever_hypoK + theme(legend.position="none"),
+                                                      total_ang1plot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_ang1plot_ever_hypoK +theme(legend.position="none"),
+                                                      ang1ICUplot_ever_hypoK + theme(legend.position="none"),
+                                                      total_prasplot_ever_hypoK + theme(legend.position="none"),
+                                                      test_total_prasplot_ever_hypoK +theme(legend.position="none"),
+                                                      prasICUplot_ever_hypoK + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=8)
+
+smoothplots_ever_hypoK <- cowplot::plot_grid(smoothplots_ever_hypoK_nolegend,legend, ncol=2, rel_widths = c(2,.2))
+
+cowplot::save_plot('output/RAS Potassium Axis by Hypokalemia.png', smoothplots_ever_hypoK, ncol=3, nrow=8)
+
+#### Smooth Plots by Ever Severe Hypokalemia####
+
+# aldosterone
+
+total_aldplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L,Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10(limits=c(9,100), n.breaks=10)
+
+test_total_aldplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10(limits=c(9,100), n.breaks=10)
+
+aldICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ald)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Aldosterone (pmol/L, Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10(limits=c(9,100), n.breaks=10)
+
+
+# potassium
+
+total_potplot_ever_severe_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=potassium)) +  
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+
+test_total_potplot_ever_severe_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=potassium)) +  
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+
+
+potICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=potassium)) +  
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Potassium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+
+# sodium
+
+total_sodplot_ever_severe_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_hospital,y=sod)) +  
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since hospitalization")+
+  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+
+test_total_sodplot_ever_severe_hypoK <- potassium_df%>% 
+  ggplot(aes(x=days_since_test,y=sod)) +  
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days since test")+  
+  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+
+
+sodICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=sod)) +  
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  theme_cowplot(12) +
+  ylab("Sodium (mmol/L)")+
+  xlab("Days from ICU admission")+
+  scale_y_continuous(breaks=seq(3.4,4,by=.2), limits = c(3.4, 4.2))
+
+# aa2r
+
+total_aa2rplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+
+test_total_aa2rplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+
+aa2rICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=aa2r)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("AA2-Ratio (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,10), n.breaks=12)
+
+# ang2
+
+
+total_ang2plot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10(limits=c(min(potassium_df$ang2,na.rm = TRUE)-min(potassium_df$ang2)/100,max(potassium_df$ang2,na.rm = TRUE)+1), n.breaks=12)
+
+test_total_ang2plot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10(limits=c(min(potassium_df$ang2,na.rm = TRUE)-min(potassium_df$ang2)/100,max(potassium_df$ang2,na.rm = TRUE)+1), n.breaks=12)
+
+ang2ICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang2)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 2 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10(limits=c(min(potassium_df$ang2,na.rm = TRUE)-min(potassium_df$ang2)/100,max(potassium_df$ang2,na.rm = TRUE)+1), n.breaks=12)
+
+
+
+# ang1
+
+
+total_ang1plot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10(limits=c(min(potassium_df$ang1,na.rm = TRUE)-min(potassium_df$ang1)/100,max(potassium_df$ang1,na.rm = TRUE)+1), n.breaks=12)
+
+test_total_ang1plot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10(limits=c(min(potassium_df$ang1,na.rm = TRUE)-min(potassium_df$ang1)/100,max(potassium_df$ang1,na.rm = TRUE)+1), n.breaks=12)
+
+ang1ICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ang1)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("Angiotensin 1 (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10(limits=c(min(potassium_df$ang1,na.rm = TRUE)-min(potassium_df$ang1)/100,max(potassium_df$ang1,na.rm = TRUE)+1), n.breaks=12)
+
+
+# pras
+
+
+
+total_prasplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10(limits=c(min(potassium_df$pras,na.rm = TRUE)-min(potassium_df$pras)/100,max(potassium_df$pras,na.rm = TRUE)+1), n.breaks=12)
+
+test_total_prasplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("PRAS (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10(limits=c(min(potassium_df$pras,na.rm = TRUE)-min(potassium_df$pras)/100,max(potassium_df$pras,na.rm = TRUE)+1), n.breaks=12)
+
+prasICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=pras)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("PRAS(Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10(limits=c(min(potassium_df$pras,na.rm = TRUE)-min(potassium_df$pras)/100,max(potassium_df$pras,na.rm = TRUE)+1), n.breaks=12)
+
+
+# ACE
+
+
+
+total_ACEplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_hospital,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since hospitalization")+
+  scale_y_log10(limits=c(min(potassium_df$ACE,na.rm = TRUE)-min(potassium_df$ACE)/100,max(potassium_df$ACE,na.rm = TRUE)+1), n.breaks=12)
+
+test_total_ACEplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_since_test,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days since test")+
+  scale_y_log10(limits=c(min(potassium_df$ACE,na.rm = TRUE)-min(potassium_df$ACE)/100,max(potassium_df$ACE,na.rm = TRUE)+1), n.breaks=12)
+
+ACEICUplot_ever_severe_hypoK <- potassium_df %>% 
+  ggplot(aes(x=days_from_icu_admission,y=ACE)) +
+  theme_cowplot(12)+
+  geom_smooth(aes(group=ever_severe_hypoK, linetype=ever_severe_hypoK), col="grey0", alpha = 0.2)+
+  ylab("ACE (Log Scale)")+
+  xlab("Days from ICU admission")+
+  scale_y_log10(limits=c(min(potassium_df$ACE,na.rm = TRUE)-min(potassium_df$ACE)/100,max(potassium_df$ACE,na.rm = TRUE)+1), n.breaks=12)
+
+
+
+
+
+legend <- cowplot::get_legend(total_aldplot_ever_severe_hypoK+ labs(linetype = "Ever Severely Hypokalemic"))
+
+smoothplots_ever_severe_hypoK_nolegend <- cowplot::plot_grid(total_potplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      test_total_potplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      potICUplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      total_aldplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      test_total_aldplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      aldICUplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      total_aa2rplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      test_total_aa2rplot_ever_severe_hypoK +theme(legend.position="none"),
+                                                      aa2rICUplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      total_ang2plot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      test_total_ang2plot_ever_severe_hypoK +theme(legend.position="none"),
+                                                      ang2ICUplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      total_ACEplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      test_total_ACEplot_ever_severe_hypoK +theme(legend.position="none"),
+                                                      ACEICUplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      total_ang1plot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      test_total_ang1plot_ever_severe_hypoK +theme(legend.position="none"),
+                                                      ang1ICUplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      total_prasplot_ever_severe_hypoK + theme(legend.position="none"),
+                                                      test_total_prasplot_ever_severe_hypoK +theme(legend.position="none"),
+                                                      prasICUplot_ever_severe_hypoK + theme(legend.position="none"), labels="AUTO", label_size = 12, ncol=3, nrow=7)
+
+smoothplots_ever_severe_hypoK <- cowplot::plot_grid(smoothplots_ever_severe_hypoK_nolegend,legend, ncol=2, rel_widths = c(2,.2))
+
+cowplot::save_plot('output/RAS Potassium Axis by Severe Hypokalemia.png', smoothplots_ever_severe_hypoK, ncol=3, nrow=7)
+
 
 
 
@@ -1203,15 +2744,15 @@ cowplot::save_plot('output/Lack of Correlation AA2-R and Pot.png', aa2rpotscat, 
 
 #### Ang2 by AA2R per 5 day interval ####
 
-scx = scale_x_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r)/100,max(potassium_df$aa2r, na.rm=TRUE)+1), n.breaks=12)
+scx = scale_x_log10(limits=c(min(potassium_df$aa2r,na.rm = TRUE)-min(potassium_df$aa2r,na.rm=TRUE)/100,max(potassium_df$aa2r, na.rm=TRUE)+1), n.breaks=12)
 
-min_ang2 <- min(potassium_df$ang2, na.rm=TRUE)-min(potassium_df$ang2, na.rm=TRUE)/100
-max_ang2 <- max(potassium_df$ang2, na.rm=TRUE)+min(potassium_df$ang2, na.rm=TRUE)/100
+min_ang2 <- min(potassium_df$ang2, na.rm=TRUE)-1#-min(potassium_df$ang2, na.rm=TRUE)/100
+max_ang2 <- max(potassium_df$ang2, na.rm=TRUE)+1#+min(potassium_df$ang2, na.rm=TRUE)/100
 scy = scale_y_continuous(breaks=seq(min_ang2,max_ang2,by=0.5), limits=c(min_ang2,max_ang2))
 theme = theme_cowplot(12)
 
 
-aa2r_fullscatter <- potassium_df %>% 
+ang2_aa2r_fullscatter <- potassium_df %>% 
   ggplot(aes(y=ang2, x=aa2r, color=aa2r_LOQ))+
   geom_point()+
   ylab("Angiotensin 2 (mmol/L)")+
@@ -1221,8 +2762,8 @@ aa2r_fullscatter <- potassium_df %>%
   theme(legend.title = element_blank())+
   theme  + annotation_logticks(sides="b") 
 
-aa2r_fullscatter_latest <- potassium_df%>% 
-  filter(days_since_aa2r <2) %>% 
+ang2_aa2r_fullscatter_latest <- potassium_df%>% 
+  filter(days_since_aa2r <6) %>% 
   ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
   ylab("Angiotensin 2 (mmol/L)")+
@@ -1231,8 +2772,8 @@ aa2r_fullscatter_latest <- potassium_df%>%
   scx+
   theme  + annotation_logticks(sides="b") 
 
-aa2r_fullscatter_next <- potassium_df%>% 
-  filter(days_to_next_aa2r <2) %>% 
+ang2_aa2r_fullscatter_next <- potassium_df%>% 
+  filter(days_to_next_aa2r <6) %>% 
   ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
   ylab("Angiotensin 2 (mmol/L)")+
@@ -1252,7 +2793,7 @@ ang2_aa2r_scatter1 <-potassium_df %>%
   theme + annotation_logticks(sides="b") 
 
 ang2_aa2r_scatter_latest1 <- potassium_df %>% 
-  filter(days_since_aa2r <2,
+  filter(days_since_aa2r <6,
          seven_days_since_hospital == 1) %>% 
   ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
@@ -1263,7 +2804,7 @@ ang2_aa2r_scatter_latest1 <- potassium_df %>%
   theme + annotation_logticks(sides="b") 
 
 ang2_aa2r_scatter_next1 <- potassium_df %>% 
-  filter(days_to_next_aa2r <2,
+  filter(days_to_next_aa2r <6,
          seven_days_since_hospital == 1) %>% 
   ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
@@ -1284,7 +2825,7 @@ ang2_aa2r_scatter2 <-potassium_df %>%
   theme + annotation_logticks(sides="b") 
 
 ang2_aa2r_scatter_latest2 <- potassium_df %>% 
-  filter(days_since_aa2r <2,
+  filter(days_since_aa2r <6,
          seven_days_since_hospital == 2)%>% 
   ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
@@ -1295,7 +2836,7 @@ ang2_aa2r_scatter_latest2 <- potassium_df %>%
   theme + annotation_logticks(sides="b") 
 
 ang2_aa2r_scatter_next2 <- potassium_df %>% 
-  filter(days_to_next_aa2r <2,
+  filter(days_to_next_aa2r <6,
          seven_days_since_hospital == 2)%>% 
   ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
@@ -1316,7 +2857,7 @@ ang2_aa2r_scatter3 <-potassium_df %>%
   theme + annotation_logticks(sides="b") 
 
 ang2_aa2r_scatter_latest3 <- potassium_df %>% 
-  filter(days_since_aa2r <2,
+  filter(days_since_aa2r <6,
          seven_days_since_hospital == 3) %>% 
   ggplot(aes(y=ang2, x=latest_aa2r))+
   geom_point()+
@@ -1327,7 +2868,7 @@ ang2_aa2r_scatter_latest3 <- potassium_df %>%
   theme + annotation_logticks(sides="b") 
 
 ang2_aa2r_scatter_next3 <- potassium_df %>% 
-  filter(days_to_next_aa2r <2,
+  filter(days_to_next_aa2r <6,
          seven_days_since_hospital == 3) %>% 
   ggplot(aes(y=ang2, x=next_aa2r))+
   geom_point()+
@@ -1337,10 +2878,409 @@ ang2_aa2r_scatter_next3 <- potassium_df %>%
   scx+
   theme  + annotation_logticks(sides="b") 
 
-(aa2rpotscat <- cowplot::plot_grid( aa2r_fullscatter,aa2r_fullscatter_latest,aa2r_fullscatter_next, ang2_aa2r_scatter1,ang2_aa2r_scatter_latest1,ang2_aa2r_scatter_next1, ang2_aa2r_scatter2,ang2_aa2r_scatter_latest2,ang2_aa2r_scatter_next2,ang2_aa2r_scatter3,ang2_aa2r_scatter_latest3,ang2_aa2r_scatter_next3, label_size = 12, ncol=3, labels = "AUTO"))
+(ang2_aa2rpotscat <- cowplot::plot_grid( ang2_aa2r_fullscatter,ang2_aa2r_fullscatter_latest,ang2_aa2r_fullscatter_next, ang2_aa2r_scatter1,ang2_aa2r_scatter_latest1,ang2_aa2r_scatter_next1, ang2_aa2r_scatter2,ang2_aa2r_scatter_latest2,ang2_aa2r_scatter_next2,ang2_aa2r_scatter3,ang2_aa2r_scatter_latest3,ang2_aa2r_scatter_next3, label_size = 12, ncol=3, labels = "AUTO"))
 
-cowplot::save_plot('output/Scatterplots AA2-R and Angiotensin 2.png', aa2rpotscat, ncol=3, nrow=4)
+cowplot::save_plot('output/Scatterplots AA2-R and Angiotensin 2.png', ang2_aa2rpotscat, ncol=3, nrow=4)
 
+
+
+#### ANG2 by Aldosterone per 5 day interval by Severity ####
+
+scx = scale_x_log10()
+scy = scale_y_log10()
+theme = theme_cowplot(12)
+
+
+ang2_ald_fullscatter <- potassium_df %>% 
+  ggplot(aes(y=ang2, x=ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme  + annotation_logticks(sides="b") 
+
+ang2_ald_fullscatter_latest <- potassium_df%>% 
+  filter(days_since_ald <6) %>% 
+  ggplot(aes(y=ang2, x=latest_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme  + annotation_logticks(sides="b") 
+
+ang2_ald_fullscatter_next <- potassium_df%>% 
+  filter(days_to_next_ald <6) %>% 
+  ggplot(aes(y=ang2, x=next_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx + 
+  theme  + annotation_logticks(sides="b") 
+
+ang2_ald_scatter1 <-potassium_df %>% 
+  filter(seven_days_since_hospital == 1) %>% 
+  ggplot(aes(y=ang2, x=ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_latest1 <- potassium_df %>% 
+  filter(days_since_ald <6,
+         seven_days_since_hospital == 1) %>% 
+  ggplot(aes(y=ang2, x=latest_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_next1 <- potassium_df %>% 
+  filter(days_to_next_ald <6,
+         seven_days_since_hospital == 1) %>% 
+  ggplot(aes(y=ang2, x=next_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx +
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter2 <-potassium_df %>% 
+  filter(seven_days_since_hospital == 2)%>% 
+  ggplot(aes(y=ang2, x=ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_latest2 <- potassium_df %>% 
+  filter(days_since_ald <6,
+         seven_days_since_hospital == 2)%>% 
+  ggplot(aes(y=ang2, x=latest_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_next2 <- potassium_df %>% 
+  filter(days_to_next_ald <6,
+         seven_days_since_hospital == 2)%>% 
+  ggplot(aes(y=ang2, x=next_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter3 <-potassium_df %>% 
+  filter(seven_days_since_hospital == 3) %>% 
+  ggplot(aes(y=ang2, x=ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_latest3 <- potassium_df %>% 
+  filter(days_since_ald <6,
+         seven_days_since_hospital == 3) %>% 
+  ggplot(aes(y=ang2, x=latest_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_next3 <- potassium_df %>% 
+  filter(days_to_next_ald <6,
+         seven_days_since_hospital == 3) %>% 
+  ggplot(aes(y=ang2, x=next_ald, color=severity))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (Logarithmic Scale)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme  + annotation_logticks(sides="b") 
+
+ang2_ald_scat_nolegend <- cowplot::plot_grid( ang2_ald_fullscatter +theme(legend.position="none"),
+                                      ang2_ald_fullscatter_latest +theme(legend.position="none"),
+                                      ang2_ald_fullscatter_next +theme(legend.position="none"),
+                                      ang2_ald_scatter1 +theme(legend.position="none"),
+                                      ang2_ald_scatter_latest1 +theme(legend.position="none"),
+                                      ang2_ald_scatter_next1 +theme(legend.position="none"), 
+                                      ang2_ald_scatter2 +theme(legend.position="none"),
+                                      ang2_ald_scatter_latest2 +theme(legend.position="none"),
+                                      ang2_ald_scatter_next2 +theme(legend.position="none"),
+                                      ang2_ald_scatter3 +theme(legend.position="none"),
+                                      ang2_ald_scatter_latest3 +theme(legend.position="none"),
+                                      ang2_ald_scatter_next3 +theme(legend.position="none"), 
+                                      label_size = 12, ncol=3, labels = "AUTO")
+
+legend <- cowplot::get_legend(ang2_ald_fullscatter+ labs(color = "Severity"))
+
+ang2_ald_scat <- cowplot::plot_grid(ang2_ald_scat_nolegend, legend, ncol=2, rel_widths = c(3,.3))
+
+cowplot::save_plot('output/Scatterplots Aldosterone and Angiotensin 2 by Severity.png', ang2_ald_scat, ncol=3, nrow=4)
+
+
+
+#### ANG2 over Aldosterone by Potassium ####
+
+scx = scale_x_log10()
+scy = scale_y_log10()
+theme = theme_cowplot(12)
+
+
+
+
+(ang2_ald_lm <- potassium_df %>% filter(RASi == "No RAS-Inhibitor") %>% 
+  ggplot(aes(y=ang2, x=ald))
+  + geom_point(aes(group = pat_id, color = severity))
+  + geom_smooth(col='grey50', method='lm', se=FALSE)
+  + geom_point(data= potassium_df,aes(group = pat_id, color = severity), shape=3)
+  + geom_smooth(data= potassium_df,aes(linetype = severity),col='grey50', linetype = "dashed", method='lm', se=FALSE)
+  + ylab("Angiotensin 2 (Logarithmic Scale)")
+  + xlab("Same Day Aldosterone (Logarithmic Scale)")
+  + scy
+  + scx
+  + theme 
+  + annotation_logticks()
+  + theme(legend.title = element_blank())
+#  + scale_color_gradient(low = "#353436",high = "#f6f805",guide = "colorbar")
+  )
+
+(AA2R_PRAS_lm <- potassium_df %>% filter(RASi == "No RAS-Inhibitor") %>%
+    ggplot(aes(y=aa2r, x=pras))
+  + geom_point(aes(group = pat_id, color = severity))
+  + geom_smooth(col='grey50', method='lm', se=FALSE)
+  + geom_point(data= potassium_df,aes(group = pat_id, color = severity), shape=3)
+  + geom_smooth(data= potassium_df,aes(linetype = severity),col='grey50', linetype = "dashed", method='lm', se=FALSE)
+  + ylab("AA2-Ratio (Logarithmic Scale)")
+  + xlab("Same Day PRAS (Logarithmic Scale)")
+  + scy
+  + scx
+  + theme 
+  + annotation_logticks()
+  + theme(legend.title = element_blank())
+  #  + scale_color_gradient(low = "#353436",high = "#f6f805",guide = "colorbar")
+)
+
+
+lmplot_nolegend <- cowplot::plot_grid( ang2_ald_lm +theme(legend.position="none"),
+                                              AA2R_PRAS_lm +theme(legend.position="none"),
+                                              label_size = 12, ncol=1,nrow=2, labels = "AUTO")
+
+legend <- cowplot::get_legend(ang2_ald_lm)
+
+(ang2_ald_scat <- cowplot::plot_grid(lmplot_nolegend, legend, ncol=2, rel_widths = c(1,.3)))
+
+cowplot::save_plot('output/log-log regression line.png', ang2_ald_scat, ncol=1, nrow=2)
+
+
+
+#### Heart Controls ####
+
+(ang2_ald <- potassium_df %>%
+   ggplot(aes(y=ang2, x=ald))
+ + geom_point(aes(group = pat_id))
+ + geom_smooth(col='grey50', method='lm', se=FALSE)
+ + ylab("Angiotensin 2 (Logarithmic Scale)")
+ + xlab("Same Day Aldosterone (Logarithmic Scale)")
+ + scale_y_log10(limits=c(2,10000))
+ + scale_x_log10(limits=c(20,2000))
+ + theme 
+ + annotation_logticks()
+ + theme(legend.title = element_blank())
+ #  + scale_color_gradient(low = "#353436",high = "#f6f805",guide = "colorbar")
+)
+
+(ang2_ald_lm_heart <- data.frame(heart_controls) %>% select(ang2 = `Ang.II..1.8.`, ald = Aldosterone, ace2 = ACE2) %>% mutate(ald=ifelse(ald==15, 20,ald)) %>% 
+    ggplot(aes(y=ang2, x=ald))
+  + geom_point()
+  + geom_smooth(col='grey50', method='lm', se=FALSE)
+  + ylab("Angiotensin 2 (Logarithmic Scale)")
+  + xlab("Same Day Aldosterone (Logarithmic Scale)")
+  + scale_y_log10(limits=c(2,10000))
+  + scale_x_log10(limits=c(20,2000))
+  + theme 
+  + annotation_logticks()
+  + theme(legend.title = element_blank())
+)
+
+
+(lmplot_nolegend_controls <- cowplot::plot_grid( ang2_ald +theme(legend.position="none"),
+                                       ang2_ald_lm_heart  +theme(legend.position="none"),label_size = 12, ncol=1,nrow=2, labels = "AUTO")
+  )
+
+
+cowplot::save_plot('output/controls log-log ang2 aldo.png', lmplot_nolegend_controls, ncol=1, nrow=2)
+
+#### AA2 PRAS 5 days ####
+
+
+scx = scale_x_log10(limits=c(min(potassium_df$ald,na.rm = TRUE)-min(potassium_df$ald,na.rm=TRUE)/100,max(potassium_df$ald, na.rm=TRUE)+1), n.breaks=12)
+min_ang2 <- min(potassium_df$ang2, na.rm=TRUE)-min(potassium_df$ang2, na.rm=TRUE)/100
+max_ang2 <- max(potassium_df$ang2, na.rm=TRUE)+1
+scy = scale_y_log10(n.breaks=12, limits=c(min_ang2,max_ang2))
+theme = theme_cowplot(12)
+
+
+ang2_ald_fullscatter <- potassium_df %>% 
+  ggplot(aes(y=ang2, x=ald, color=intubation))+
+  geom_point()+
+  geom_smooth()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme(legend.title = element_blank())+
+  theme  + annotation_logticks(sides="b") 
+
+ang2_ald_fullscatter_latest <- potassium_df%>% 
+  filter(days_since_ald <6) %>% 
+  ggplot(aes(y=ang2, x=latest_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme  + annotation_logticks(sides="b") 
+
+ang2_ald_fullscatter_next <- potassium_df%>% 
+  filter(days_to_next_ald <6) %>% 
+  ggplot(aes(y=ang2, x=next_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx + 
+  theme  + annotation_logticks(sides="b") 
+
+ang2_ald_scatter1 <-potassium_df %>% 
+  filter(seven_days_since_hospital == 1) %>% 
+  ggplot(aes(y=ang2, x=ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_latest1 <- potassium_df %>% 
+  filter(days_since_ald <6,
+         seven_days_since_hospital == 1) %>% 
+  ggplot(aes(y=ang2, x=latest_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_next1 <- potassium_df %>% 
+  filter(days_to_next_ald <6,
+         seven_days_since_hospital == 1) %>% 
+  ggplot(aes(y=ang2, x=next_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx +
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter2 <-potassium_df %>% 
+  filter(seven_days_since_hospital == 2)%>% 
+  ggplot(aes(y=ang2, x=ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_latest2 <- potassium_df %>% 
+  filter(days_since_ald <6,
+         seven_days_since_hospital == 2)%>% 
+  ggplot(aes(y=ang2, x=latest_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_next2 <- potassium_df %>% 
+  filter(days_to_next_ald <6,
+         seven_days_since_hospital == 2)%>% 
+  ggplot(aes(y=ang2, x=next_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter3 <-potassium_df %>% 
+  filter(seven_days_since_hospital == 3) %>% 
+  ggplot(aes(y=ang2, x=ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Same Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_latest3 <- potassium_df %>% 
+  filter(days_since_ald <6,
+         seven_days_since_hospital == 3) %>% 
+  ggplot(aes(y=ang2, x=latest_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Previous Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme + annotation_logticks(sides="b") 
+
+ang2_ald_scatter_next3 <- potassium_df %>% 
+  filter(days_to_next_ald <6,
+         seven_days_since_hospital == 3) %>% 
+  ggplot(aes(y=ang2, x=next_ald))+
+  geom_point()+
+  ylab("Angiotensin 2 (mmol/L)")+
+  xlab("Next Day Aldosterone (Logarithmic Scale)")+
+  scy +
+  scx+
+  theme  + annotation_logticks(sides="b") 
+
+(ang2_ald_scat <- cowplot::plot_grid( ang2_ald_fullscatter,ang2_ald_fullscatter_latest,ang2_ald_fullscatter_next, ang2_ald_scatter1,ang2_ald_scatter_latest1,ang2_ald_scatter_next1, ang2_ald_scatter2,ang2_ald_scatter_latest2,ang2_ald_scatter_next2,ang2_ald_scatter3,ang2_ald_scatter_latest3,ang2_ald_scatter_next3, label_size = 12, ncol=3, labels = "AUTO"))
+
+cowplot::save_plot('output/Scatterplots Aldosterone and Angiotensin 2.png', ang2_ald_scat, ncol=3, nrow=4)
 
 
 
@@ -1349,23 +3289,19 @@ cowplot::save_plot('output/Scatterplots AA2-R and Angiotensin 2.png', aa2rpotsca
 #### GEE without splines ####
 
 
-formule1 <- potassium ~ 
-  age + sex + in_icu + days_since_hospital+
-  latest_ald + latest_ald:days_since_ald +
-  latest_pot + latest_pot:days_since_pot+
-  latest_arb+latest_arb:days_since_arb+
-  latest_acei+latest_acei:days_since_acei+
-  latest_mra+latest_mra:days_since_mra+
-  latest_loop_diuretic+latest_loop_diuretic:days_since_loop_diuretic+
-  latest_thiazid+latest_thiazid:days_since_thiazid+
-  latest_pot_flush+latest_pot_flush:days_since_pot_flush+
-  latest_pot_supp+latest_pot_supp:days_since_pot_supp+
-  latest_cat + latest_cat:days_since_cat
+(formule1 <- potassium ~ 
+  age + sex + in_icu + days_since_hospital
+  +latest_ald + latest_ald:days_since_ald 
+  +latest_pot + latest_pot:days_since_pot
+  +latest_arb+latest_arb:days_since_arb
+  +latest_acei+latest_acei:days_since_acei
+  +latest_mra+latest_mra:days_since_mra
+  +latest_loop_diuretic+latest_loop_diuretic:days_since_loop_diuretic
+  +latest_thiazid+latest_thiazid:days_since_thiazid
+  +latest_pot_flush+latest_pot_flush:days_since_pot_flush
+  +latest_pot_supp+latest_pot_supp:days_since_pot_supp
+  + latest_cat + latest_cat:days_since_cat)
 
-
-
-potald <- potald %>% 
-  mutate(hypoK= if_else(potassium <3.5, 1, 0))
 
 
 geelm.control(std.err ="san.se")
@@ -1508,7 +3444,7 @@ potald <- potald %>%
   mutate(latest_ald_log = log10(latest_ald))
 
 
-formule2 <- potassium ~ 
+(formule2 <- potassium ~ 
   age + sex + in_icu + days_since_hospital+
   latest_ald_log + latest_ald_log:days_since_ald +
   latest_pot + latest_pot:days_since_pot+
@@ -1518,8 +3454,8 @@ formule2 <- potassium ~
   latest_loop_diuretic+latest_loop_diuretic:days_since_loop_diuretic+
   latest_thiazid+latest_thiazid:days_since_thiazid+
   latest_pot_flush+latest_pot_flush:days_since_pot_flush+
-  latest_pot_supp+latest_pot_supp:days_since_pot_supp+
-  latest_cat + latest_cat:days_since_cat
+  latest_pot_supp+latest_pot_supp:days_since_pot_supp
+  + latest_cat + latest_cat:days_since_cat)
 
     
 
@@ -1754,6 +3690,7 @@ logIDA2_1div = logIDA_1div %>% mutate_at(vars(age,days_since_hospital,potassium,
                                               ,arb_int,acei_int,mra_int,loop_diuretic_int,thiazid_int,pot_flush_int,pot_supp_int),log10)
 dev.off()
 
+
 pdf(file="output/Predictor Distributions 1div.pdf")
 for (x in c(1:length(colnames(IDA_1div)))){
   xa = colnames(IDA_1div)[x]
@@ -1906,7 +3843,7 @@ before_ICU <- potald %>%
   group_by(ID) %>% 
   fill(after_ICU,.direction = "down") %>% 
   ungroup() %>% 
-  mutate(after_ICU = replace_na(after_ICU,0)) %>% 
+  mutate(after_ICU = replace_na(after_ICU = 0)) %>% 
   filter(after_ICU==0)
 
 
