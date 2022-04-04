@@ -26,6 +26,8 @@ library(broom)
 library(scales)
 library(flextable)
 library(ggrepel)
+library(lme4)
+library(MuMIn)
 
 
 
@@ -35,8 +37,21 @@ add_columns <- function(df, columns){
   mutate(df, !!!new)
 }
 
+
+
+list_pat_id <- function(data, name){
+  
+  assign(name, 
+         data %$% unique(pat_id), 
+         envir = .GlobalEnv)
+  
+  return(data)
+  
+}
+
 # load files ----
 
+RAS_df             <- readRDS("C:/Users/Krenn.S/Open Projects/COVID Aldosterone/data/data_update_20211202/RAS_df.rds")
 clinical_data      <- read_excel('data/data_update_20211202/SARS-FP_clinical_data_UPDATES_11_23_short_modified_prepSH.xlsx')
 group_ids          <- read_excel('data/new_category.xlsx') %>% rename(status = status3)
 ACOVACT_lab_all_ID_no_names_2020_09_22 <- read.delim("data/ACOVACT_lab_all_ID_no_names_2020_09_22.txt")
@@ -176,7 +191,7 @@ meds <- raw_meds %>%
 # potassium analysis time frame ----
 
 
-renamevars_pot <- c(potassium = 'Kalium', sod = 'Natrium', pot_urine = 'Kalium /U')
+renamevars_pot <- c(potassium = 'Kalium', sod = 'Natrium', pot_urine = 'Kalium /U', crea_urine = 'Kreatinin /U')
 
 potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
   distinct() %>%
@@ -353,7 +368,8 @@ potassium_df <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
   mutate(insulin = if_else(insulin=="yes",1,0,missing = 0),
          Diabetes= factor(diabetes, levels=c("yes","no"), labels=c("Yes","No")),
          pot_tert = factor(ntile(potassium,3), levels=c(1,2,3), labels=c("First", "Second", "Third")),
-         ald_tert = factor(ntile(ald,3), levels=c(1,2,3), labels=c("First", "Second", "Third"))
+         ald_tert = factor(ntile(ald,3), levels=c(1,2,3), labels=c("First", "Second", "Third")),
+         pot_crea_urine = pot_urine/crea_urine
          )%>% 
 #  mutate_at(vars(latest_arb,latest_acei,latest_mra,latest_thiazid,latest_loop_diuretic,latest_pot_flush,latest_pot_supp),as.factor) %>% 
   relocate(any_of(c("pat_id", "date_days", "days_since_hospital", "seven_days_since_hospital", "potassium","first_week_hypoK", "second_week_hypoK", "third_week_hypoK","hypoK","pot_tert","hypoK","ever_hypoK","ald","ald_tert", "cat","latest_cat", "aa2r", "latest_aa2r", "next_aa2r", "never_icu","in_icu","date_icu_asdate","date_icu_discharge_asdate","date_hospital_discharge_asdate","date_death_asdate","num_date_death","date_death","end_of_icu","pat_id","days_since_ald", "days_since_pot", "latest_pot_date", "latest_pot", "ald", "latest_ald", "latest_ald_date" )), .after=potassium)
@@ -585,7 +601,7 @@ potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium),
                         days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
                         latest_ald= ifelse(is.na(ald), latest_ald, ald), 
                         days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
-  ggplot(aes(x=days_since_hospital,y=pot_urine, color=next_pot)) + geom_point()+  geom_text_repel(aes(label=days_to_next_pot))+
+  ggplot(aes(x=days_since_hospital,y=pot_crea_urine, color=next_pot)) + geom_point()+  geom_text_repel(aes(label=days_to_next_pot))+
   geom_line(aes(group=pat_id))+
   ylab("Potassium in Urine")+ 
   xlab("Days since Hospitalization") +
@@ -599,7 +615,7 @@ potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium),
                         days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
                         latest_ald= ifelse(is.na(ald), latest_ald, ald), 
                         days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
-  ggplot(aes(x=days_since_hospital,y=pot_urine, color=latest_pras)) + geom_point()+  geom_text_repel(aes(label=days_since_pras))+
+  ggplot(aes(x=days_since_hospital,y=pot_crea_urine, color=latest_pras)) + geom_point()+  geom_text_repel(aes(label=days_since_pras))+
   ylab("Potassium in Urine")+ 
   xlab("Days since Hospitalization") +
   scale_colour_gradientn(colours = c("red","green","yellow"),breaks = c(50,400,3000),trans="log")+ 
@@ -610,7 +626,7 @@ potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium),
                         days_to_next_pot = ifelse(is.na(potassium), days_to_next_pot, 0),
                         latest_ald= ifelse(is.na(ald), latest_ald, ald), 
                         days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
-  ggplot(aes(x=next_pot,y=pot_urine, color=latest_ald)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_ald))+
+  ggplot(aes(x=next_pot,y=pot_crea_urine, color=latest_ald)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_ald))+
   ylab("Potassium in Urine")+ 
   xlab("Next Serum Potassium")+ 
   scale_colour_gradientn(colours = c("darkgreen","green","yellow","red"),breaks = c(50,150,400),trans="log")+ 
@@ -625,7 +641,7 @@ potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium),
                            days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
                            latest_ald= ifelse(is.na(ald), latest_ald, ald),
                            days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
-  ggplot(aes(x=latest_ald,y=pot_urine, color=latest_pras)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_pras))+
+  ggplot(aes(x=latest_ald,y=pot_crea_urine, color=latest_pras)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_pras))+
   ylab("Potassium in Urine")+ 
   xlab("Latest Serum Aldosterone")+ 
   scale_colour_gradientn(colours = c("darkgreen","green","yellow","red"),breaks = c(50,400,3000),trans="log")+ 
@@ -639,7 +655,7 @@ potassium_df %>% mutate(next_pot= ifelse(is.na(potassium), next_pot, potassium),
                         days_since_pras = ifelse(is.na(pras), days_since_pras, 0),
                         latest_ald= ifelse(is.na(ald), latest_ald, ald),
                         days_since_ald = ifelse(is.na(ald), days_since_ald, 0)) %>% 
-  ggplot(aes(x=latest_pras,y=pot_urine, color=latest_ald)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_pras))+
+  ggplot(aes(x=latest_pras,y=pot_crea_urine, color=latest_ald)) + geom_point(aes())+ geom_text_repel(aes(label=days_since_pras))+
   ylab("Potassium in Urine")+ 
   xlab("Latest PRAS")+ 
   scale_colour_gradientn(colours = c("darkgreen","green","yellow","red"),breaks = c(50,400,3000),trans="log")+ 
