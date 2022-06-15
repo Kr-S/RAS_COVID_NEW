@@ -9,7 +9,7 @@ library(ggthemes)
 
 # read excel files ------------------------------------------------------------
 
-clinical_data      <- read_excel('data/data_update_20211202/SARS-FP_clinical_data_UPDATES_11_23_short_modified_prepSH.xlsx') #new data
+clinical_data      <- read_excel('data/data_update_20211202/2022-05-15_SARS-FP_clinical-data.xlsx')
 group_ids          <- read_excel('data/new_category.xlsx') %>% rename(status = status3)
 lab_values_KFJ     <- read_tsv('data/ACOVACT_lab_all_ID_no_names_2020_09_22.txt', 
                                  col_names = c('source', 'variable', 'range_normal', 
@@ -186,6 +186,7 @@ renamevars <- c(potassium = 'Kalium',
 
 laball <- ACOVACT_lab_all_ID_no_names_2020_09_22 %>%
   distinct() %>%
+  mutate(Type= replace(Type ,Type=='Kalium art.', 'Kalium')) %>% 
   pivot_wider(names_from = Type, values_from = Lab.values) %>%
   select(
     renamevars,
