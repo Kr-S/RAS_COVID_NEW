@@ -16,7 +16,7 @@ display <- function(x, digits = 2){
 
 
 model_df <- ras_df %>% 
-  filter(!is.na(AngII), !is.na(potassium), !is.na(in_icu), !is.na(Aldosterone)) %>% #, RASi == "No RAS-Inhibitor") %>% #, !pat_id %in% c("SARS-FP-75","SARS-FP-94")) %>% 
+  filter(!is.na(AngII), !is.na(potassium), !is.na(in_icu), !is.na(Aldosterone)) %>% #, !pat_id %in% c("SARS-FP-75","SARS-FP-94")) %>% 
   mutate(LOQ = ifelse(Aldosterone<=20, 1, 0))
 cor(model_df %>% select_if(is.numeric), method="spearman")
 describe(model_df$LOQ)
@@ -95,7 +95,8 @@ for(lhs in indep){
                        'AngII + Potassium',
                        'AngII + ICU',
                        'AngII + Potassium + ICU')
-                     ))))
+                     ))) %>% 
+                     filter(!is.na(statistic)))
   
 }
 
